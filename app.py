@@ -589,7 +589,7 @@ def show_util_table(util_df, types, years):
         return ""
 
     st.dataframe(
-        df_display.style.applymap(color_util, subset=[c for c in df_display.columns if c != "Lab Type"]),
+        df_display.style.map(color_util, subset=[c for c in df_display.columns if c != "Lab Type"]),
         use_container_width=True, hide_index=True,
     )
 

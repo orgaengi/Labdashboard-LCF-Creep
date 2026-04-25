@@ -150,15 +150,80 @@ def validate_data(df, col_map, allowed_types=None):
             )
     return errors, warns
 
+def _is_wide_format(df, allowed_types):
+    """Check if df is wide format: has Year + lab-type columns directly."""
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+    allowed_lower = [t.lower() for t in allowed_types]
+    year_found = any(a in cl for cl in cols_lower for a in COLUMN_ALIASES["year"])
+    type_cols  = [c for al in allowed_lower for cl, c in cols_lower.items() if al == cl]
+    return year_found and len(type_cols) >= 1 and "type" not in cols_lower and "value" not in cols_lower
+
+
+def _wide_to_long(df, allowed_types):
+    """Melt wide-format (Year, Week?, Lab1, Lab2..) to long format (Year, Week, Type, Value)."""
+    cols_lower = {c.lower().strip(): c for c in df.columns}
+    # Identify year col
+    year_col = None
+    for alias in COLUMN_ALIASES["year"]:
+        for cl, co in cols_lower.items():
+            if alias in cl:
+                year_col = co; break
+        if year_col: break
+    # Identify week col
+    week_col = None
+    for cl, co in cols_lower.items():
+        if "week" in cl or "wk" in cl:
+            week_col = co; break
+    # Identify lab type columns
+    allowed_lower_map = {t.lower(): t for t in allowed_types}
+    type_cols = []
+    for cl, co in cols_lower.items():
+        if cl in allowed_lower_map:
+            type_cols.append((co, allowed_lower_map[cl]))
+    rows = []
+    for _, row in df.iterrows():
+        year = row[year_col]
+        # Skip summary / total rows
+        try:
+            year = int(float(year))
+        except (ValueError, TypeError):
+            continue
+        week = row[week_col] if week_col else None
+        try:
+            week = int(float(week)) if week is not None and not pd.isna(week) else None
+        except (ValueError, TypeError):
+            week = None
+        for orig_col, canonical_type in type_cols:
+            val = row[orig_col]
+            try:
+                val = float(val)
+            except:
+                val = 0.0
+            if pd.isna(val): val = 0.0
+            r = {"Year": year, "Type": canonical_type, "Value": val}
+            if week is not None:
+                r["Week"] = week
+            rows.append(r)
+    return pd.DataFrame(rows)
+
+
 def load_and_filter(path, allowed_types):
-    """Load Excel, filter to allowed_types, return (df, col_map, errors, warns)."""
+    """Load Excel (wide OR long format), return (df, col_map, errors, warns)."""
     try:
-        df = pd.read_excel(path)
+        # Try Weekly_Planner sheet first (reference model), fall back to first sheet
+        try:
+            df = pd.read_excel(path, sheet_name="Weekly_Planner")
+        except Exception:
+            df = pd.read_excel(path)
     except Exception as e:
         return None, {}, [f"Cannot open file: {e}"], []
 
     if df.empty:
         return None, {}, ["File is empty."], []
+
+    # Detect and handle wide format
+    if _is_wide_format(df, allowed_types):
+        df = _wide_to_long(df, allowed_types)
 
     col_map = detect_columns(df)
     errors, warns = validate_data(df, col_map, allowed_types)
@@ -442,79 +507,64 @@ def write_utilization_chart(wb, util_df, types, years):
 
 
 def write_capacity_chart(wb, weekly_df, types, capacities, years):
-    """Grouped bar: Capacity vs Avg demand — FIXED single table."""
+    """Capacity vs Avg & Peak demand — matches reference model exactly."""
     ws = wb.create_sheet("Chart_Capacity_vs_Demand")
-    banner(ws, 1, "Average Weekly Demand vs Capacity", cols=30)
+    banner(ws, 1, "Average Weekly Demand vs Capacity — All Years", cols=30)
 
-    HR = 3   # header row
-    D0 = 4   # first data row
-    DE = 3 + len(types)
+    HR = 3; D0 = 4; DE = D0 + len(types) - 1
 
-    # Columns: LabType | Capacity | yr1_avg | yr2_avg ...
-    cw(ws, 1, 16); cw(ws, 2, 14)
+    # Columns: LabType | Capacity | [yr Avg] x N | [yr Peak] x N
+    avg_cols  = {}
+    peak_cols = {}
+    cw(ws, 1, 16); cw(ws, 2, 12)
     hdr(ws.cell(HR, 1, "Lab Type"),  bg="1F3864", sz=9)
-    hdr(ws.cell(HR, 2, "Capacity\n(Annual)"), bg="1F3864", sz=9)
-    yr_cols = {}
+    hdr(ws.cell(HR, 2, "Capacity"),  bg="1F3864", sz=9)
     for i, y in enumerate(years):
-        col = 3 + i
-        hdr(ws.cell(HR, col, f"{y}\nAvg Weekly"), bg="2E75B6", sz=9)
-        cw(ws, col, 14)
-        yr_cols[y] = col
+        ac = 3 + i
+        hdr(ws.cell(HR, ac, f"{y} Avg Demand"),  bg="2E75B6", sz=9); cw(ws, ac, 14)
+        avg_cols[y] = ac
+    for i, y in enumerate(years):
+        pc = 3 + len(years) + i
+        hdr(ws.cell(HR, pc, f"{y} Peak Demand"), bg="1F5C1A", sz=9); cw(ws, pc, 14)
+        peak_cols[y] = pc
 
     for ri, t in enumerate(types, D0):
         cap = capacities.get(t, 0)
-        ws.cell(ri, 1, t).font   = Font(name="Arial", size=9, bold=True)
-        ws.cell(ri, 1).border    = bdr()
-        ws.cell(ri, 1).alignment = Alignment(horizontal="left")
-        c2 = ws.cell(ri, 2, cap)
-        fmt(c2, number_format="#,##0")
+        cap_wk = cap / 52 if cap > 0 else 0
+        c1 = ws.cell(ri, 1, t); c1.font = Font(name="Arial", size=9, bold=True)
+        c1.border = bdr(); c1.alignment = Alignment(horizontal="left")
+        c2 = ws.cell(ri, 2, round(cap_wk, 2))
+        fmt(c2, number_format="0.00")
         c2.fill = PatternFill("solid", start_color="EBF3FB")
         c2.font = Font(name="Arial", size=9, bold=True, color="1F3864")
         for y in years:
             yd  = weekly_df[weekly_df["Year"] == y]
-            avg = yd[t].mean()
-            cell = ws.cell(ri, yr_cols[y], round(avg, 3))
-            fmt(cell, number_format="0.000")
-            util = avg / (cap / 52) if cap > 0 else 0
-            if util > 1.0:
-                cell.fill = PatternFill("solid", start_color="FF4444")
-                cell.font = Font(name="Arial", size=9, bold=True, color="FFFFFF")
-            elif util >= 0.8:
-                cell.fill = PatternFill("solid", start_color="FFD700")
-            else:
-                cell.fill = PatternFill("solid", start_color="C6EFCE")
+            avg  = round(yd[t].mean(), 2) if t in yd.columns else 0
+            peak = round(yd[t].max(), 2)  if t in yd.columns else 0
+            util_avg  = avg  / cap_wk if cap_wk > 0 else 0
+            util_peak = peak / cap_wk if cap_wk > 0 else 0
+            # Avg cell
+            ca = ws.cell(ri, avg_cols[y], avg); fmt(ca, number_format="0.00")
+            ca.fill = PatternFill("solid", start_color=("FF4444" if util_avg>1 else "FFD700" if util_avg>=0.8 else "C6EFCE"))
+            if util_avg > 1: ca.font = Font(name="Arial", size=9, bold=True, color="FFFFFF")
+            # Peak cell
+            cp = ws.cell(ri, peak_cols[y], peak); fmt(cp, number_format="0.00")
+            cp.fill = PatternFill("solid", start_color=("FF4444" if util_peak>1 else "FFD700" if util_peak>=0.8 else "C6EFCE"))
+            if util_peak > 1: cp.font = Font(name="Arial", size=9, bold=True, color="FFFFFF")
 
-    # Chart
+    # Bar chart — weekly capacity + avg demand per year
     chart = BarChart()
-    chart.type      = "col"
-    chart.grouping  = "clustered"
-    chart.title     = "Average Weekly Demand vs Capacity"
-    chart.y_axis.title = "Weekly Units"
-    chart.x_axis.title = "Lab Type"
-    chart.style     = 10
-    chart.height    = 15
-    chart.width     = 28
-
+    chart.type = "col"; chart.grouping = "clustered"
+    chart.title = "Average Weekly Demand vs Capacity"
+    chart.y_axis.title = "Weekly Units"; chart.x_axis.title = "Lab Type"
+    chart.style = 10; chart.height = 16; chart.width = 32
     cats = Reference(ws, min_col=1, min_row=D0, max_row=DE)
-    # Weekly capacity series
-    cap_wk_row = ws.max_row + 2
-    ws.cell(cap_wk_row, 1, "_cap_wk_label").value = "Weekly Cap"
-    for ri, t in enumerate(types, cap_wk_row + 1):
-        cap = capacities.get(t, 0)
-        ws.cell(ri, 1, t)
-        ws.cell(ri, 2, round(cap / 52, 3))
-
-    # Use annual capacity / 52 as weekly reference line
     cap_ref = Reference(ws, min_col=2, max_col=2, min_row=HR, max_row=DE)
-    chart.add_data(cap_ref, titles_from_data=True)
-    chart.set_categories(cats)
-    chart.series[0].title = SeriesLabel(v="Annual Capacity")
-
+    chart.add_data(cap_ref, titles_from_data=True); chart.set_categories(cats)
+    chart.series[0].title = SeriesLabel(v="Weekly Capacity")
     for y in years:
-        col = yr_cols[y]
-        ref = Reference(ws, min_col=col, max_col=col, min_row=HR, max_row=DE)
+        ref = Reference(ws, min_col=avg_cols[y], max_col=avg_cols[y], min_row=HR, max_row=DE)
         chart.add_data(ref, titles_from_data=True)
-
     ws.add_chart(chart, f"A{DE + 4}")
 
 
@@ -745,6 +795,139 @@ def write_gantt_current_year(wb, weekly_df, types, capacities,
         Font(name="Arial", size=8, italic=True, color="C00000")
 
     ws.freeze_panes = "C4"
+
+
+def write_gantt_all_years(wb, weekly_df, types, capacities, years):
+    """Gantt with ░▒ symbols for all years — matches reference model."""
+    ws = wb.create_sheet("Gantt_Chart")
+    banner(ws, 1, "Lab Occupancy Gantt — Busy Periods (≥ 80% Utilization) by Week", cols=55)
+
+    # Quarter header row
+    QR = 2
+    for label, sc, ec in [("Q1",3,15),("Q2",16,28),("Q3",29,41),("Q4",42,54)]:
+        ws.merge_cells(start_row=QR, start_column=sc, end_row=QR, end_column=ec)
+        c = ws.cell(QR, sc, label)
+        c.font = Font(bold=True, size=8, name="Arial", color="FFFFFF")
+        c.fill = PatternFill("solid", start_color="2E75B6")
+        c.alignment = Alignment(horizontal="center")
+
+    HR = 3
+    hdr(ws.cell(HR,1,"Lab Type"), bg="1F3864", sz=9); cw(ws,1,14)
+    hdr(ws.cell(HR,2,"Year"),     bg="1F3864", sz=9); cw(ws,2,7)
+    for w in range(1,53):
+        c = ws.cell(HR, w+2, w)
+        c.font = Font(bold=True, size=7, name="Arial", color="FFFFFF")
+        c.fill = PatternFill("solid", start_color="2E75B6")
+        c.alignment = Alignment(horizontal="center")
+        cw(ws, w+2, 1.8)
+    ws.row_dimensions[HR].height = 14
+
+    ri = HR + 1
+    for t in types:
+        for year in sorted(years):
+            yd = weekly_df[weekly_df["Year"]==year]
+            cap_wk = capacities.get(t,1)/52
+            lc = ws.cell(ri, 1, t)
+            lc.font = Font(bold=True,size=9,name="Arial"); lc.border=bdr()
+            yc = ws.cell(ri, 2, year)
+            yc.font = Font(size=9,name="Arial"); yc.border=bdr()
+            yc.alignment = Alignment(horizontal="center")
+            for w in range(1,53):
+                wrow = yd[yd["Week"]==w]
+                dem  = float(wrow[t].values[0]) if not wrow.empty else 0.0
+                util = dem/cap_wk if cap_wk>0 else 0.0
+                cell = ws.cell(ri, w+2)
+                cell.border = bdr("EEEEEE")
+                cell.alignment = Alignment(horizontal="center")
+                if util >= 1.0:
+                    cell.value = "▒"; cell.fill = PatternFill("solid",start_color="FF4444")
+                    cell.font = Font(size=7, name="Arial", color="FFFFFF", bold=True)
+                elif util >= 0.8:
+                    cell.value = "░"; cell.fill = PatternFill("solid",start_color="FFD700")
+                    cell.font = Font(size=7, name="Arial", color="333333")
+                else:
+                    cell.value = None
+                    cell.fill = PatternFill("solid",start_color="F7F7F7")
+            ws.row_dimensions[ri].height = 12
+            ri += 1
+        # blank row between lab types
+        ws.row_dimensions[ri].height = 6
+        ri += 1
+
+    # Legend
+    leg = ri + 1
+    for i,(lbl,bg,fg) in enumerate([
+        ("▒  Overloaded > 100%",     "FF4444","FFFFFF"),
+        ("░  Near Capacity 80–100%", "FFD700","333333"),
+        ("   Active < 80%",           "F7F7F7","666666"),
+    ]):
+        c = ws.cell(leg+i, 1, lbl)
+        c.fill=PatternFill("solid",start_color=bg)
+        c.font=Font(name="Arial",size=9,bold=True,color=fg)
+        c.border=bdr()
+    ws.freeze_panes = "C4"
+
+
+def write_gantt_heatmap(wb, weekly_df, types, capacities, years):
+    """Numeric heatmap per year — matches reference Gantt_Heatmap sheet."""
+    ws = wb.create_sheet("Gantt_Heatmap")
+    banner(ws, 1, "Gantt Heatmap — Weekly Demand by Lab Type & Year (all values shown)", cols=55)
+
+    red_f  = PatternFill("solid", start_color="FF4444")
+    yel_f  = PatternFill("solid", start_color="FFD700")
+    grn_f  = PatternFill("solid", start_color="C6EFCE")
+    wht_f  = PatternFill("solid", start_color="FFFFFF")
+
+    block_start = 3
+    for year in sorted(years):
+        yd = weekly_df[weekly_df["Year"]==year]
+        # Year label
+        ws.merge_cells(start_row=block_start, start_column=1,
+                       end_row=block_start, end_column=53)
+        yc = ws.cell(block_start, 1, f"  Year {year}")
+        yc.font = Font(bold=True,size=10,name="Arial",color="FFFFFF")
+        yc.fill = PatternFill("solid",start_color="2E75B6")
+        yc.alignment = Alignment(horizontal="left",vertical="center")
+        ws.row_dimensions[block_start].height = 16
+
+        # Header
+        HR = block_start+1
+        h0 = ws.cell(HR,1,"Lab / Week")
+        h0.font=Font(bold=True,size=8,name="Arial"); h0.fill=PatternFill("solid",start_color="D9E1F2")
+        h0.alignment=Alignment(horizontal="center"); h0.border=bdr(); cw(ws,1,14)
+        for w in range(1,53):
+            c=ws.cell(HR,w+1,w)
+            c.font=Font(bold=True,size=7,name="Arial")
+            c.fill=PatternFill("solid",start_color="D9E1F2")
+            c.alignment=Alignment(horizontal="center"); c.border=bdr()
+            cw(ws,w+1,2.5)
+
+        # Data rows
+        for ri2, t in enumerate(types, HR+1):
+            cap_wk = capacities.get(t,1)/52
+            lc=ws.cell(ri2,1,t)
+            lc.font=Font(bold=True,size=9,name="Arial"); lc.border=bdr()
+            lc.alignment=Alignment(horizontal="left")
+            for w in range(1,53):
+                wrow=yd[yd["Week"]==w]
+                dem=float(wrow[t].values[0]) if not wrow.empty else 0.0
+                util=dem/cap_wk if cap_wk>0 else 0.0
+                cell=ws.cell(ri2,w+1,round(dem,2))
+                cell.number_format="0.00"; cell.border=bdr()
+                cell.alignment=Alignment(horizontal="center")
+                cell.font=Font(size=8,name="Arial")
+                if util>1.0:
+                    cell.fill=red_f; cell.font=Font(size=8,name="Arial",bold=True,color="FFFFFF")
+                elif util>=0.8:
+                    cell.fill=yel_f
+                elif util>=0.3:
+                    cell.fill=grn_f
+                else:
+                    cell.fill=wht_f
+            ws.row_dimensions[ri2].height=13
+
+        block_start += 2 + len(types) + 1  # year label + header + rows + gap
+    ws.freeze_panes = "B3"
 
 
 def save_workbook(wb, input_path, filename):

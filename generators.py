@@ -56,40 +56,31 @@ def generate_lcf_creep(input_path, capacities, theme, progress_cb=None):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    p("📄 Sheet 1/6 — Weekly Planner…")
+    p("📄 Sheet 1 — Weekly Planner…")
     core.write_weekly_planner(wb, weekly_df, types, TOOL_TITLE)
 
-    p("🎨 Sheet 2/6 — Utilization…")
+    p("🎨 Sheet 2 — Utilization…")
     core.write_utilization_sheet(wb, util_df, types, theme)
 
-    p("📋 Sheet 3/6 — Summary…")
+    p("📋 Sheet 3 — Summary…")
+    cap_list = " | ".join(f"{k}={v}/yr" for k,v in capacities.items())
     core.write_summary_sheet(wb, weekly_df, util_df, types, capacities, years,
-                              TOOL_TITLE,
-                              cap_note=f"LCF max={capacities['LCF']}/yr | "
-                                       f"Creep max={capacities['Creep']}/yr")
+                              TOOL_TITLE, cap_note=cap_list)
 
-    p("📈 Sheet 4/6 — Utilization Chart…")
+    p("📈 Sheet 4 — Utilization Chart…")
     core.write_utilization_chart(wb, util_df, types, years)
 
-    p("📊 Sheet 5/6 — Capacity vs Demand…")
+    p("📊 Sheet 5 — Capacity vs Demand Chart…")
     core.write_capacity_chart(wb, weekly_df, types, capacities, years)
 
-    p("📊 Sheet 6/6 — Year-on-Year…")
+    p("📊 Sheet 6 — Year-on-Year…")
     core.write_yoy_chart(wb, weekly_df, types, years)
 
-    # Gantt for current year (if data available)
-    current_year = core.CURRENT_YEAR
-    current_week = core.CURRENT_WEEK
-    if current_year in years:
-        p(f"🗓️  Gantt — {current_year}…")
-        core.write_gantt_current_year(wb, weekly_df, types, capacities,
-                                       current_year, current_week)
-    else:
-        # Use last year in data as "current"
-        last_yr = max(years)
-        p(f"🗓️  Gantt — {last_yr} (latest available)…")
-        core.write_gantt_current_year(wb, weekly_df, types, capacities,
-                                       last_yr, 52)
+    p("🗓️  Sheet 7 — Gantt All Years…")
+    core.write_gantt_all_years(wb, weekly_df, types, capacities, years)
+
+    p("🔥 Sheet 8 — Gantt Heatmap…")
+    core.write_gantt_heatmap(wb, weekly_df, types, capacities, years)
 
     p("💾 Saving…")
     out = core.save_workbook(wb, input_path, OUTPUT_FILE)
@@ -349,34 +340,31 @@ def generate_coating(input_path, individual_caps, theme, progress_cb=None):
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    p("📄 Sheet 1/7 — Weekly Planner…")
+    p("📄 Sheet 1 — Weekly Planner…")
     core.write_weekly_planner(wb, weekly_df, types, TOOL_TITLE)
 
-    p("🎨 Sheet 2/7 — Utilization…")
+    p("🎨 Sheet 2 — Utilization…")
     core.write_utilization_sheet(wb, util_df, types, theme)
 
-    p("📋 Sheet 3/7 — Summary…")
+    p("📋 Sheet 3 — Summary…")
+    cap_note2 = " | ".join(f"{k}={v}/yr" for k,v in individual_caps.items())
     core.write_summary_sheet(wb, weekly_df, util_df, types, individual_caps, years,
-                              TOOL_TITLE,
-                              cap_note="  ".join(f"{k}={v}/yr" for k, v in individual_caps.items()))
+                              TOOL_TITLE, cap_note=cap_note2)
 
-    p("📈 Sheet 4/7 — Utilization Chart…")
+    p("📈 Sheet 4 — Utilization Chart…")
     core.write_utilization_chart(wb, util_df, types, years)
 
-    p("📊 Sheet 5/7 — Capacity vs Demand…")
+    p("📊 Sheet 5 — Capacity vs Demand Chart…")
     core.write_capacity_chart(wb, weekly_df, types, individual_caps, years)
 
-    p("📊 Sheet 6/7 — Year-on-Year…")
+    p("📊 Sheet 6 — Year-on-Year…")
     core.write_yoy_chart(wb, weekly_df, types, years)
 
-    # Gantt current year
-    current_year = core.CURRENT_YEAR
-    current_week = core.CURRENT_WEEK
-    gantt_year   = current_year if current_year in years else max(years)
-    gantt_week   = current_week if gantt_year == current_year else 52
-    p(f"🗓️  Sheet 7/7 — Gantt {gantt_year}…")
-    core.write_gantt_current_year(wb, weekly_df, types, individual_caps,
-                                   gantt_year, gantt_week)
+    p("🗓️  Sheet 7 — Gantt All Years…")
+    core.write_gantt_all_years(wb, weekly_df, types, individual_caps, years)
+
+    p("🔥 Sheet 8 — Gantt Heatmap…")
+    core.write_gantt_heatmap(wb, weekly_df, types, individual_caps, years)
 
     p("💾 Saving…")
     out = core.save_workbook(wb, input_path, OUTPUT_FILE)
