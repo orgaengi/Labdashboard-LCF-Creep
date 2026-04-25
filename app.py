@@ -123,6 +123,21 @@ st.markdown("""
         border: 1px solid #D9E1F2 !important;
         border-radius: 8px !important;
     }
+
+    /* Chat bubbles */
+    .chat-user {
+        background: #1F3864; color: white;
+        padding: 8px 12px; border-radius: 12px 12px 2px 12px;
+        margin: 4px 0; font-size: 12px; max-width: 92%;
+        margin-left: auto; text-align: right;
+    }
+    .chat-bot {
+        background: #E8F0FE; color: #1F3864;
+        padding: 8px 12px; border-radius: 12px 12px 12px 2px;
+        margin: 4px 0; font-size: 12px; max-width: 92%;
+        border-left: 3px solid #2E75B6;
+    }
+    .chat-wrap { max-height: 320px; overflow-y: auto; padding: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -208,10 +223,11 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
         barmode="group",
         title="Year-on-Year Demand by Lab Type",
         xaxis_title="Year", yaxis_title="Samples/Year",
-        legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-        height=420, plot_bgcolor="white", paper_bgcolor="white",
-        font=dict(family="Arial", size=12),
-        margin=dict(t=50, b=80),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+        height=460, plot_bgcolor="white", paper_bgcolor="white",
+        font=dict(family="Arial", size=11),
+        margin=dict(t=50, b=110, r=20),
+        uniformtext=dict(minsize=8, mode="hide"),
     )
     fig_bar.update_xaxes(showgrid=False)
     fig_bar.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
@@ -303,11 +319,11 @@ def chart_utilization_line(util_df, types, years, colors):
 
 
 def chart_capacity_bar(weekly_df, types, capacities, years):
-    """Capacity vs Avg Weekly Demand bar chart."""
+    """Capacity vs Avg Weekly Demand bar chart — no text overlap."""
     fig = go.Figure()
     cap_weekly = {t: capacities.get(t, 1) / 52 for t in types}
 
-    # Capacity bars
+    # Capacity bars — use "inside" to avoid crowding at top
     fig.add_trace(go.Bar(
         name="Weekly Capacity",
         x=types,
@@ -315,29 +331,41 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
         marker_color="#D9E1F2",
         marker_line_color="#1F3864", marker_line_width=1.5,
         text=[f"Cap: {cap_weekly[t]:.2f}" for t in types],
-        textposition="outside",
+        textposition="inside",
+        insidetextanchor="start",
+        textfont=dict(size=9, color="#1F3864"),
     ))
 
-    bar_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700"]
+    bar_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6","#C6EFCE"]
     for yi, year in enumerate(years):
-        yd    = weekly_df[weekly_df["Year"] == year]
-        avgs  = [round(yd[t].mean(), 3) for t in types]
+        yd   = weekly_df[weekly_df["Year"] == year]
+        avgs = [round(yd[t].mean(), 3) for t in types]
         fig.add_trace(go.Bar(
             name=f"{year} Avg Demand",
             x=types, y=avgs,
             marker_color=bar_colors[yi % len(bar_colors)],
             text=[f"{v:.2f}" for v in avgs],
             textposition="outside",
+            textfont=dict(size=9),
         ))
+
+    # Calculate a clean yaxis max with headroom so outside labels don't clip
+    all_vals = [cap_weekly[t] for t in types]
+    for y in years:
+        yd = weekly_df[weekly_df["Year"] == y]
+        all_vals += [yd[t].mean() for t in types]
+    y_max = max((v for v in all_vals if not math.isnan(v)), default=1) * 1.25
 
     fig.update_layout(
         barmode="group",
         title="Average Weekly Demand vs Capacity",
         xaxis_title="Lab Type", yaxis_title="Weekly Units",
-        height=420, plot_bgcolor="white", paper_bgcolor="white",
-        font=dict(family="Arial", size=12),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.3),
-        margin=dict(b=80),
+        yaxis=dict(range=[0, y_max]),
+        height=460, plot_bgcolor="white", paper_bgcolor="white",
+        font=dict(family="Arial", size=11),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+        margin=dict(b=100, t=60, r=20),
+        uniformtext=dict(minsize=8, mode="hide"),   # hide labels that cannot fit
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
@@ -349,56 +377,67 @@ def chart_gantt(weekly_df, types, capacities, year, current_week):
     weeks = list(range(1, 53))
     yd    = weekly_df[weekly_df["Year"] == year]
 
-    z, labels, customdata = [], [], []
-    for t in types:
+    z, labels, text_grid = [], [], []
+    for i, t in enumerate(types):
         cap_wk = capacities.get(t, 1) / 52
-        row_z, row_cd = [], []
+        row_z, row_txt = [], []
         for w in weeks:
             wrow = yd[yd["Week"] == w]
-            dem  = wrow[t].values[0] if not wrow.empty else 0.0
+            dem  = float(wrow[t].values[0]) if not wrow.empty else 0.0
             util = dem / cap_wk if cap_wk > 0 else 0.0
-            row_z.append(round(util, 3))
-            row_cd.append(f"Week {w} | {t}<br>Demand: {dem:.2f} | Util: {util:.1%}")
+            # clamp to [0, 1.5] for display but store raw for tooltip
+            row_z.append(round(min(util, 1.5), 3))
+            row_txt.append(f"Week {w} | {t}<br>Demand: {dem:.2f}<br>Util: {util:.1%}")
         z.append(row_z)
         labels.append(t)
+        text_grid.append(row_txt)
 
-    # Color scale: green → yellow → red
+    # Colorscale values MUST be 0.0–1.0 (plotly requirement)
+    # Map: 0→green, 0.53→yellow (=80% of 1.5 scale), 0.67→red (=100%), 1.0→dark red
     colorscale = [
-        [0.0,  "#C6EFCE"],
-        [0.5,  "#70AD47"],
-        [0.8,  "#FFD700"],
-        [1.0,  "#FF4444"],
-        [1.5,  "#CC0000"],
+        [0.00, "#C6EFCE"],   # 0% util → light green
+        [0.40, "#70AD47"],   # ~60% util → green
+        [0.53, "#FFD700"],   # ~80% util → yellow
+        [0.67, "#FF4444"],   # ~100% util → red
+        [1.00, "#CC0000"],   # ≥150% util → dark red
     ]
 
     fig = go.Figure(go.Heatmap(
-        z=z, x=[f"Wk{w}" for w in weeks], y=labels,
-        colorscale=colorscale, zmin=0, zmax=1.5,
-        customdata=[[cd]*52 for cd in labels],
+        z=z,
+        x=[f"Wk{w}" for w in weeks],
+        y=labels,
+        colorscale=colorscale,
+        zmin=0, zmax=1.5,
+        text=text_grid,
         hovertemplate="%{text}<extra></extra>",
-        text=[[f"Week {w} | {t}<br>Util: {z[i][w-1]:.1%}"
-               for w in weeks] for i, t in enumerate(types)],
         colorbar=dict(
-            title="Utilization",
-            tickvals=[0, 0.5, 0.8, 1.0, 1.5],
-            ticktext=["0%","50%","80%","100%",">150%"],
+            title=dict(text="Utilization", side="right"),
+            tickvals=[0, 0.4, 0.8, 1.0, 1.5],
+            ticktext=["0%", "40%", "80%", "100%", "≥150%"],
+            len=0.8,
         ),
+        showscale=True,
     ))
 
     # Mark current week
-    if year == CURRENT_YEAR:
-        fig.add_vline(x=current_week - 0.5, line_color="#C00000",
-                      line_width=2, line_dash="dash",
-                      annotation_text=f"Week {current_week} (Now)",
-                      annotation_position="top")
+    if year == CURRENT_YEAR and 1 <= current_week <= 52:
+        fig.add_vline(
+            x=current_week - 1,          # vline on x-axis uses index not label
+            line_color="#C00000", line_width=2, line_dash="dash",
+            annotation_text=f"Wk {current_week} (Now)",
+            annotation_position="top right",
+            annotation_font_size=10,
+        )
 
     fig.update_layout(
-        title=f"Gantt Heatmap — {year} Occupancy by Week",
-        xaxis_title="Week", yaxis_title="Lab Type",
-        height=max(250, 80 * len(types) + 120),
+        title=f"Gantt Heatmap — {year} Weekly Occupancy",
+        xaxis_title="Week",
+        yaxis_title="Lab Type",
+        height=max(280, 90 * len(types) + 140),
         font=dict(family="Arial", size=11),
         paper_bgcolor="white",
-        margin=dict(l=100, r=60, t=60, b=60),
+        plot_bgcolor="white",
+        margin=dict(l=110, r=80, t=60, b=60),
     )
     return fig
 
@@ -555,6 +594,129 @@ def show_util_table(util_df, types, years):
     )
 
 
+def make_editable_excel(weekly_df, util_df, annual_totals, types, capacities, years, title="Lab Data"):
+    """Build an editable Excel workbook with 3 sheets and return bytes."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+
+    thin = Border(
+        left=Side(style="thin", color="CCCCCC"),
+        right=Side(style="thin", color="CCCCCC"),
+        top=Side(style="thin", color="CCCCCC"),
+        bottom=Side(style="thin", color="CCCCCC"),
+    )
+
+    def hdr_cell(ws, row, col, val, bg="1F3864", fg="FFFFFF", sz=10, bold=True):
+        c = ws.cell(row, col, val)
+        c.font = Font(name="Arial", size=sz, bold=bold, color=fg)
+        c.fill = PatternFill("solid", start_color=bg)
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin
+        return c
+
+    def data_cell(ws, row, col, val, fmt=None, bg=None):
+        c = ws.cell(row, col, val)
+        c.font = Font(name="Arial", size=9)
+        c.alignment = Alignment(horizontal="center")
+        c.border = thin
+        if fmt: c.number_format = fmt
+        if bg:  c.fill = PatternFill("solid", start_color=bg)
+        return c
+
+    # ── Sheet 1: Weekly Demand (editable) ──────────────────
+    ws1 = wb.active
+    ws1.title = "Weekly_Demand"
+    ws1.cell(1, 1, f"📋 {title} — Editable Weekly Demand").font = Font(
+        name="Arial", size=12, bold=True, color="1F3864")
+    ws1.cell(2, 1, "✏️  You can edit the values in this sheet. Yellow = editable cells.")
+    ws1.cell(2, 1).font = Font(name="Arial", size=9, italic=True, color="7F6000")
+
+    # Header row
+    headers = ["Year", "Week"] + list(types)
+    for ci, h in enumerate(headers, 1):
+        bg = "1F3864" if ci <= 2 else "2E75B6"
+        hdr_cell(ws1, 4, ci, h, bg=bg)
+        ws1.column_dimensions[get_column_letter(ci)].width = 14 if ci > 2 else 8
+
+    editable_fill = PatternFill("solid", start_color="FFFFE0")  # light yellow
+    for ri, row in enumerate(weekly_df.itertuples(index=False), 5):
+        vals = list(row)
+        data_cell(ws1, ri, 1, vals[0])  # Year
+        data_cell(ws1, ri, 2, vals[1])  # Week
+        for ci, t in enumerate(types, 3):
+            c = data_cell(ws1, ri, ci, round(vals[2 + list(weekly_df.columns[2:]).index(t)], 3),
+                          fmt="0.000")
+            c.fill = editable_fill  # mark as editable
+
+    ws1.freeze_panes = "A5"
+    ws1.auto_filter.ref = f"A4:{get_column_letter(len(headers))}4"
+
+    # ── Sheet 2: Annual Summary ─────────────────────────────
+    ws2 = wb.create_sheet("Annual_Summary")
+    ws2.cell(1, 1, f"📊 {title} — Annual Summary").font = Font(
+        name="Arial", size=12, bold=True, color="1F3864")
+
+    hdrs2 = ["Lab Type", "Capacity/yr", "Weekly Cap"] + [str(y) for y in years] + ["Best Year", "Worst Year"]
+    for ci, h in enumerate(hdrs2, 1):
+        hdr_cell(ws2, 3, ci, h)
+        ws2.column_dimensions[get_column_letter(ci)].width = 14
+
+    for ri, t in enumerate(types, 4):
+        cap = capacities.get(t, 1)
+        data_cell(ws2, ri, 1, t)
+        data_cell(ws2, ri, 2, cap, fmt="#,##0")
+        data_cell(ws2, ri, 3, round(cap / 52, 2), fmt="0.00")
+        yr_vals = {}
+        for ci, y in enumerate(years, 4):
+            dem = annual_totals.get(int(y), {}).get(t, 0)
+            yr_vals[y] = dem
+            util = dem / cap if cap > 0 else 0
+            bg = "FF4444" if util > 1 else "FFD700" if util >= 0.8 else "C6EFCE"
+            c = data_cell(ws2, ri, ci, round(dem, 1), fmt="#,##0.0", bg=bg)
+            if util > 1:
+                c.font = Font(name="Arial", size=9, bold=True, color="FFFFFF")
+        best_yr = max(yr_vals, key=yr_vals.get, default="")
+        worst_yr = min(yr_vals, key=yr_vals.get, default="")
+        data_cell(ws2, ri, len(hdrs2), str(worst_yr))
+        data_cell(ws2, ri, len(hdrs2) - 1, str(best_yr))
+
+    ws2.freeze_panes = "A4"
+
+    # ── Sheet 3: Utilization Summary ───────────────────────
+    ws3 = wb.create_sheet("Utilization_%")
+    ws3.cell(1, 1, f"📈 {title} — Utilization % (Green<80% | Yellow 80-100% | Red>100%)").font = Font(
+        name="Arial", size=11, bold=True, color="1F3864")
+
+    hdrs3 = ["Lab Type"] + [f"{y} Peak" for y in years] + [f"{y} Avg" for y in years]
+    for ci, h in enumerate(hdrs3, 1):
+        hdr_cell(ws3, 3, ci, h)
+        ws3.column_dimensions[get_column_letter(ci)].width = 13
+
+    for ri, t in enumerate(types, 4):
+        data_cell(ws3, ri, 1, t)
+        cap = capacities.get(t, 1)
+        for ci, y in enumerate(years, 2):
+            peak = util_df[util_df["Year"] == y][t].max() if t in util_df.columns else 0
+            avg  = util_df[util_df["Year"] == y][t].mean() if t in util_df.columns else 0
+            for val, offset in [(peak, 0), (avg, len(years))]:
+                col = ci + offset
+                bg = "FF4444" if val > 1 else "FFD700" if val >= 0.8 else "C6EFCE"
+                c = data_cell(ws3, ri, col, round(val, 4), fmt="0.0%", bg=bg)
+                if val > 1:
+                    c.font = Font(name="Arial", size=9, bold=True, color="FFFFFF")
+
+    ws3.freeze_panes = "B4"
+
+    # Save to bytes
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
 def capacity_warning(individual_caps, combined_cap):
     """Show warning if individual caps sum > combined cap."""
     total = sum(individual_caps.values())
@@ -610,12 +772,17 @@ with st.sidebar:
     st.markdown("## 🤖 AI Lab Assistant")
     st.caption("Ask questions about your lab data or request changes to capacity settings.")
 
-    # Display chat history
-    chat_container = st.container()
-    with chat_container:
-        for msg in st.session_state.chat_history[-6:]:  # show last 6 messages
-            role_icon = "🧑" if msg["role"] == "user" else "🤖"
-            st.markdown(f"**{role_icon}** {msg['content']}")
+    # Display chat history with bubble styling
+    bubbles_html = '<div class="chat-wrap">'
+    for msg in st.session_state.chat_history[-10:]:
+        if msg["role"] == "user":
+            bubbles_html += f'<div class="chat-user">🧑 {msg["content"]}</div>'
+        else:
+            # Render line breaks from assistant
+            txt = msg["content"].replace("\n", "<br>")
+            bubbles_html += f'<div class="chat-bot">🤖 {txt}</div>'
+    bubbles_html += "</div>"
+    st.markdown(bubbles_html, unsafe_allow_html=True)
 
     # Chat input
     user_question = st.text_area("Your question:", key="chat_input", height=80,
@@ -679,7 +846,7 @@ Keep answers concise and actionable. Use bullet points for clarity."""
                 else:
                     client = anthropic.Anthropic(api_key=api_key)
                     response = client.messages.create(
-                        model="claude-sonnet-4-20250514",
+                        model="claude-sonnet-4-5-20251001",
                         max_tokens=600,
                         system=system_prompt,
                         messages=messages_to_send,
@@ -783,10 +950,23 @@ if "Tool 1" in tool:
             with tabs[4]:
                 st.markdown("**Utilization Summary (Peak & Avg per year)**")
                 show_util_table(udf_1, types_1, years_1)
+                st.markdown("---")
+                st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
+                editable_bytes_1 = make_editable_excel(
+                    wdf_1, udf_1, annual_1, types_1, caps_1, years_1,
+                    title="LCF & Creep Lab"
+                )
+                st.download_button(
+                    "⬇️ Download Editable Excel (Weekly Data + Summary)",
+                    data=editable_bytes_1,
+                    file_name="LCF_Creep_Editable.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="t1_editable_dl",
+                )
 
             # Generate Excel
             st.markdown("---")
-            st.markdown('<div class="section-label">💾 Generate Excel Dashboard</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>', unsafe_allow_html=True)
             if st.button("⚡ Generate Full Excel Dashboard", key="t1_gen"):
                 with st.spinner("Generating Excel dashboard..."):
                     out1, warns = gen_module.generate_lcf_creep(paths_1[0], caps_1, theme_1)
@@ -925,9 +1105,22 @@ elif "Tool 2" in tool:
 
             with tabs2[4]:
                 show_util_table(udf_2, types_2, years_2)
+                st.markdown("---")
+                st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
+                editable_bytes_2 = make_editable_excel(
+                    wdf_2, udf_2, annual_2, types_2, ind_caps_2, years_2,
+                    title="Coating Labs"
+                )
+                st.download_button(
+                    "⬇️ Download Editable Excel (Weekly Data + Summary)",
+                    data=editable_bytes_2,
+                    file_name="Coating_Labs_Editable.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="t2_editable_dl",
+                )
 
             st.markdown("---")
-            st.markdown('<div class="section-label">💾 Generate Excel Dashboard</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>', unsafe_allow_html=True)
             if st.button("⚡ Generate Full Excel Dashboard", key="t2_gen"):
                 with st.spinner("Generating..."):
                     out2, warns2 = gen_module.generate_coating(paths_2[0], ind_caps_2, theme_2)
