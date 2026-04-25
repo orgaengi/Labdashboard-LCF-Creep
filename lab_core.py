@@ -197,10 +197,11 @@ def build_weekly(df, col_map, capacities):
             rw = {"Year": year, "Week": week}
             ru = {"Year": year, "Week": week}
             for t in types:
-                dem  = annual[t] * SEASONAL[wi] / 52
-                cap  = capacities.get(t, 1)
-                rw[t] = round(dem, 3)
-                ru[t] = round(dem / cap if cap > 0 else 0, 4)
+                dem     = annual[t] * SEASONAL[wi] / 52
+                cap     = capacities.get(t, 1)
+                cap_wk  = cap / 52          # ← weekly capacity (annual ÷ 52)
+                rw[t]   = round(dem, 3)
+                ru[t]   = round(dem / cap_wk if cap_wk > 0 else 0, 4)  # util vs weekly cap
             rows_w.append(rw)
             rows_u.append(ru)
 

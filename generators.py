@@ -333,7 +333,7 @@ def write_combined_chart(wb, weekly_df, types, years, combined_cap):
 #  MAIN GENERATOR
 # ═══════════════════════════════════════════════════════════
 
-def generate_coating(input_path, individual_caps, combined_cap, theme, progress_cb=None):
+def generate_coating(input_path, individual_caps, theme, progress_cb=None):
     def p(msg):
         if progress_cb: progress_cb(msg)
 
@@ -349,31 +349,24 @@ def generate_coating(input_path, individual_caps, combined_cap, theme, progress_
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    p("📄 Sheet 1/8 — Weekly Planner…")
+    p("📄 Sheet 1/7 — Weekly Planner…")
     core.write_weekly_planner(wb, weekly_df, types, TOOL_TITLE)
 
-    p("🎨 Sheet 2/8 — Individual Utilization…")
+    p("🎨 Sheet 2/7 — Utilization…")
     core.write_utilization_sheet(wb, util_df, types, theme)
 
-    p("🔀 Sheet 3/8 — Combined Utilization…")
-    write_combined_sheet(wb, weekly_df, types, years, combined_cap)
-
-    p("📋 Sheet 4/8 — Summary…")
+    p("📋 Sheet 3/7 — Summary…")
     core.write_summary_sheet(wb, weekly_df, util_df, types, individual_caps, years,
                               TOOL_TITLE,
-                              cap_note=f"Combined max = {combined_cap} samples/yr  |  "
-                                       + "  ".join(f"{k}={v}" for k,v in individual_caps.items()))
+                              cap_note="  ".join(f"{k}={v}/yr" for k, v in individual_caps.items()))
 
-    p("📈 Sheet 5/8 — Utilization Chart…")
+    p("📈 Sheet 4/7 — Utilization Chart…")
     core.write_utilization_chart(wb, util_df, types, years)
 
-    p("📊 Sheet 6/8 — Capacity vs Demand…")
+    p("📊 Sheet 5/7 — Capacity vs Demand…")
     core.write_capacity_chart(wb, weekly_df, types, individual_caps, years)
 
-    p("📊 Sheet 7/8 — Combined Trend Chart…")
-    write_combined_chart(wb, weekly_df, types, years, combined_cap)
-
-    p("📊 Sheet 8/8 — Year-on-Year…")
+    p("📊 Sheet 6/7 — Year-on-Year…")
     core.write_yoy_chart(wb, weekly_df, types, years)
 
     # Gantt current year
@@ -381,7 +374,7 @@ def generate_coating(input_path, individual_caps, combined_cap, theme, progress_
     current_week = core.CURRENT_WEEK
     gantt_year   = current_year if current_year in years else max(years)
     gantt_week   = current_week if gantt_year == current_year else 52
-    p(f"🗓️  Gantt — {gantt_year}…")
+    p(f"🗓️  Sheet 7/7 — Gantt {gantt_year}…")
     core.write_gantt_current_year(wb, weekly_df, types, individual_caps,
                                    gantt_year, gantt_week)
 

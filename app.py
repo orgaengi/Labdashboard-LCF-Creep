@@ -142,7 +142,7 @@ CURRENT_WEEK = datetime.date.today().isocalendar()[1]
 GROUP_A = {"name":"Mechanical Labs",  "types":["LCF","Creep"],
            "color":"#1A4E8A","cap_total":72}
 GROUP_B = {"name":"Coating Labs",     "types":["Cold Spray","HVOF","Plasma"],
-           "color":"#1F5C1A","cap_total":350}
+           "color":"#1F5C1A","cap_per_lab":350}  # each lab independently 350/yr
 
 
 # ──────────────────────────────────────────────────────────
@@ -575,6 +575,15 @@ def capacity_warning(individual_caps, combined_cap):
 
 
 # ──────────────────────────────────────────────────────────
+#  SESSION STATE — Chat
+# ──────────────────────────────────────────────────────────
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+if "chat_context" not in st.session_state:
+    st.session_state.chat_context = {}
+
+
+# ──────────────────────────────────────────────────────────
 #  SIDEBAR
 # ──────────────────────────────────────────────────────────
 
@@ -595,6 +604,93 @@ with st.sidebar:
     st.markdown("**Output**\n\nExcel dashboard with 7–8 sheets including charts, Gantt, and pie charts.")
     st.markdown("---")
     st.caption(f"Current week: **{CURRENT_WEEK}** of {CURRENT_YEAR}")
+
+    # ── AI Chat Assistant in Sidebar ──────────────────────
+    st.markdown("---")
+    st.markdown("## 🤖 AI Lab Assistant")
+    st.caption("Ask questions about your lab data or request changes to capacity settings.")
+
+    # Display chat history
+    chat_container = st.container()
+    with chat_container:
+        for msg in st.session_state.chat_history[-6:]:  # show last 6 messages
+            role_icon = "🧑" if msg["role"] == "user" else "🤖"
+            st.markdown(f"**{role_icon}** {msg['content']}")
+
+    # Chat input
+    user_question = st.text_area("Your question:", key="chat_input", height=80,
+                                  placeholder="e.g. What is Cold Spray utilization in 2024?\nSuggest capacity for 80% utilization...")
+    
+    col_send, col_clear = st.columns(2)
+    with col_send:
+        send_clicked = st.button("💬 Ask", key="chat_send", use_container_width=True)
+    with col_clear:
+        if st.button("🗑️ Clear", key="chat_clear", use_container_width=True):
+            st.session_state.chat_history = []
+            st.rerun()
+
+    if send_clicked and user_question.strip():
+        # Build context from current session state
+        ctx = st.session_state.get("chat_context", {})
+        context_str = ""
+        if ctx:
+            context_str = f"""
+Current dashboard context:
+- Tool: {ctx.get('tool', 'unknown')}
+- Lab types: {ctx.get('types', [])}
+- Years in data: {ctx.get('years', [])}
+- Capacities (samples/yr): {ctx.get('capacities', {})}
+- Latest year demand: {ctx.get('latest_demand', {})}
+- Peak utilization per lab: {ctx.get('peak_util', {})}
+"""
+        system_prompt = """You are an expert lab capacity planning assistant for a coating and mechanical testing lab.
+You help users understand utilization charts, interpret lab demand trends, and suggest capacity adjustments.
+
+Labs tracked:
+- Cold Spray, HVOF, Plasma (Coating Labs) — each has independent capacity
+- LCF, Creep (Mechanical Labs)
+
+Key concepts:
+- Utilization = Weekly demand / Weekly capacity. Green <80%, Yellow 80-100%, Red >100%
+- Weekly capacity = Annual capacity / 52
+- Seasonal demand patterns are applied (summer peaks, winter dips)
+
+When suggesting capacity changes, always give concrete numbers.
+Keep answers concise and actionable. Use bullet points for clarity."""
+
+        messages_to_send = []
+        for h in st.session_state.chat_history[-8:]:
+            messages_to_send.append({"role": h["role"], "content": h["content"]})
+        
+        user_msg_full = user_question.strip()
+        if context_str:
+            user_msg_full = f"{context_str}\n\nUser question: {user_question.strip()}"
+        
+        messages_to_send.append({"role": "user", "content": user_msg_full})
+        st.session_state.chat_history.append({"role": "user", "content": user_question.strip()})
+
+        with st.spinner("Thinking…"):
+            try:
+                import anthropic, os
+                api_key = (st.secrets.get("ANTHROPIC_API_KEY", None)
+                           if hasattr(st, "secrets") else None) or os.environ.get("ANTHROPIC_API_KEY")
+                if not api_key:
+                    st.error("❌ ANTHROPIC_API_KEY not set. See HOW_TO_RUN_LOCALLY.md Step 6.")
+                else:
+                    client = anthropic.Anthropic(api_key=api_key)
+                    response = client.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=600,
+                        system=system_prompt,
+                        messages=messages_to_send,
+                    )
+                    answer = response.content[0].text
+                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                    st.rerun()
+            except ImportError:
+                st.error("❌ Install anthropic: `pip install -r requirements.txt`")
+            except Exception as e:
+                st.error(f"❌ Chat error: {str(e)[:150]}")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -642,6 +738,18 @@ if "Tool 1" in tool:
 
             wdf_1, udf_1, types_1, years_1 = core.build_weekly(df_1, col_map_1, caps_1)
             annual_1 = get_annual_totals(wdf_1, types_1, years_1)
+
+            # Expose data to AI chat assistant
+            last_y1_ctx = int(max(years_1))
+            st.session_state.chat_context = {
+                "tool": "LCF & Creep (Tool 1)",
+                "types": list(types_1),
+                "years": [int(y) for y in years_1],
+                "capacities": caps_1,
+                "latest_demand": annual_1.get(last_y1_ctx, {}),
+                "peak_util": {t: f"{udf_1[udf_1['Year']==last_y1_ctx][t].max():.1%}"
+                              for t in types_1},
+            }
 
             # KPI cards
             st.markdown('<div class="section-label">📊 Key Metrics — Latest Year</div>', unsafe_allow_html=True)
@@ -712,47 +820,21 @@ elif "Tool 2" in tool:
                                    label_visibility="collapsed")
 
     # ── Capacity config ───────────────────────────────────
-    st.markdown('<div class="section-label">⚙️ Capacity Configuration</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">⚙️ Capacity Configuration — Each Lab is Independent</div>', unsafe_allow_html=True)
+    st.info("💡 Each lab has its **own independent capacity** of 350 samples/year by default. Edit any lab below.")
 
-    cap_mode = st.radio(
-        "Capacity Mode",
-        ["Combined only (350 total — shared across all 3 labs)",
-         "Individual per lab (set each separately)"],
-        key="t2_cap_mode",
-        help="Combined: 350 total is shared. Individual: set each lab's own limit.",
-    )
-
-    combined_cap_2 = st.number_input(
-        "Combined Total Capacity (samples/year)",
-        value=350, min_value=1, max_value=9999, key="t2_combined",
-    )
-
-    if "Individual" in cap_mode:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            cs_cap = st.number_input("Cold Spray (samples/yr)",
-                                      value=140, min_value=1, max_value=9999, key="t2_cs")
-        with c2:
-            hvof_cap = st.number_input("HVOF (samples/yr)",
-                                        value=120, min_value=1, max_value=9999, key="t2_hvof")
-        with c3:
-            plasma_cap = st.number_input("Plasma (samples/yr)",
-                                          value=90, min_value=1, max_value=9999, key="t2_pl")
-        ind_caps_2 = {"Cold Spray": cs_cap, "HVOF": hvof_cap, "Plasma": plasma_cap}
-        capacity_warning(ind_caps_2, combined_cap_2)
-    else:
-        # Proportional split based on default ratios
-        total_default = 350
-        ind_caps_2 = {
-            "Cold Spray": round(combined_cap_2 * 140 / total_default),
-            "HVOF":       round(combined_cap_2 * 120 / total_default),
-            "Plasma":     round(combined_cap_2 *  90 / total_default),
-        }
-        c1, c2, c3 = st.columns(3)
-        with c1: st.metric("Cold Spray (auto-split)", f"{ind_caps_2['Cold Spray']}/yr")
-        with c2: st.metric("HVOF (auto-split)",        f"{ind_caps_2['HVOF']}/yr")
-        with c3: st.metric("Plasma (auto-split)",      f"{ind_caps_2['Plasma']}/yr")
-        st.caption("Auto-split based on 140:120:90 default ratio. Switch to Individual mode to set manually.")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        cs_cap = st.number_input("🔵 Cold Spray (samples/yr)",
+                                  value=350, min_value=1, max_value=9999, key="t2_cs")
+    with c2:
+        hvof_cap = st.number_input("🟠 HVOF (samples/yr)",
+                                    value=350, min_value=1, max_value=9999, key="t2_hvof")
+    with c3:
+        plasma_cap = st.number_input("🟣 Plasma (samples/yr)",
+                                      value=350, min_value=1, max_value=9999, key="t2_pl")
+    ind_caps_2 = {"Cold Spray": cs_cap, "HVOF": hvof_cap, "Plasma": plasma_cap}
+    st.caption(f"Weekly caps → Cold Spray: **{cs_cap/52:.1f}**/wk  |  HVOF: **{hvof_cap/52:.1f}**/wk  |  Plasma: **{plasma_cap/52:.1f}**/wk")
 
     theme_name_2 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t2_theme")
     theme_2 = core.COLOR_THEMES[theme_name_2]
@@ -771,34 +853,48 @@ elif "Tool 2" in tool:
             wdf_2, udf_2, types_2, years_2 = core.build_weekly(df_2, col_map_2, ind_caps_2)
             annual_2 = get_annual_totals(wdf_2, types_2, years_2)
 
+            # Expose data to AI chat assistant
+            last_y2_ctx = int(max(years_2))
+            st.session_state.chat_context = {
+                "tool": "Coating Labs (Tool 2)",
+                "types": list(types_2),
+                "years": [int(y) for y in years_2],
+                "capacities": ind_caps_2,
+                "latest_demand": annual_2.get(last_y2_ctx, {}),
+                "peak_util": {t: f"{udf_2[udf_2['Year']==last_y2_ctx][t].max():.1%}"
+                              for t in types_2},
+            }
+
             # Combined utilization KPIs
-            st.markdown('<div class="section-label">📊 Combined Utilization — Latest Year</div>', unsafe_allow_html=True)
+            st.markdown('<div class="section-label">📊 Lab Utilization — Latest Year</div>', unsafe_allow_html=True)
             last_y2 = int(max(years_2))
-            combined_demand = sum(annual_2[last_y2].get(t, 0) for t in types_2)
-            comb_util = combined_demand / combined_cap_2 if combined_cap_2 > 0 else 0
 
             col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
             with col_kpi1:
+                combined_demand = sum(annual_2[last_y2].get(t, 0) for t in types_2)
+                total_cap = sum(ind_caps_2.values())
+                comb_util = combined_demand / total_cap if total_cap > 0 else 0
                 cls = "red" if comb_util > 1 else "amber" if comb_util >= 0.8 else "green"
                 st.markdown(f"""<div class="metric-card {cls}">
-                    <div style="font-size:11px;color:#666;font-weight:600;">Combined Demand ({last_y2})</div>
+                    <div style="font-size:11px;color:#666;font-weight:600;">Total Demand ({last_y2})</div>
                     <div style="font-size:28px;font-weight:800;color:#1F5C1A;">{combined_demand:.0f}</div>
-                    <div style="font-size:13px;">of {combined_cap_2} capacity ({comb_util:.0%})</div>
+                    <div style="font-size:13px;">across all 3 labs (sum cap: {total_cap})</div>
                 </div>""", unsafe_allow_html=True)
             with col_kpi2:
                 st.markdown(f"""<div class="metric-card">
                     <div style="font-size:11px;color:#666;font-weight:600;">Weekly Demand Avg</div>
                     <div style="font-size:28px;font-weight:800;color:#1F5C1A;">{combined_demand/52:.1f}</div>
-                    <div style="font-size:13px;">samples/week (cap: {combined_cap_2/52:.1f}/wk)</div>
+                    <div style="font-size:13px;">samples/week total</div>
                 </div>""", unsafe_allow_html=True)
             with col_kpi3:
                 peak_wk = sum(wdf_2[wdf_2["Year"]==last_y2][t].max() for t in types_2)
-                peak_util = peak_wk / (combined_cap_2/52) if combined_cap_2 > 0 else 0
+                total_wk_cap = sum(ind_caps_2.values()) / 52
+                peak_util = peak_wk / total_wk_cap if total_wk_cap > 0 else 0
                 cls3 = "red" if peak_util > 1 else "amber" if peak_util >= 0.8 else "green"
                 st.markdown(f"""<div class="metric-card {cls3}">
                     <div style="font-size:11px;color:#666;font-weight:600;">Peak Week Demand ({last_y2})</div>
                     <div style="font-size:28px;font-weight:800;color:#1F5C1A;">{peak_wk:.1f}</div>
-                    <div style="font-size:13px;">samples ({peak_util:.0%} of weekly cap)</div>
+                    <div style="font-size:13px;">samples ({peak_util:.0%} of total weekly cap)</div>
                 </div>""", unsafe_allow_html=True)
 
             show_kpi_row(types_2, annual_2, ind_caps_2, years_2)
@@ -834,7 +930,7 @@ elif "Tool 2" in tool:
             st.markdown('<div class="section-label">💾 Generate Excel Dashboard</div>', unsafe_allow_html=True)
             if st.button("⚡ Generate Full Excel Dashboard", key="t2_gen"):
                 with st.spinner("Generating..."):
-                    out2, warns2 = gen_module.generate_coating(paths_2[0], ind_caps_2, combined_cap_2, theme_2)
+                    out2, warns2 = gen_module.generate_coating(paths_2[0], ind_caps_2, theme_2)
                     with open(out2, 'rb') as f: excel_bytes2 = f.read()
                 st.download_button(
                     "⬇️ Download Coating_Labs_Dashboard.xlsx",
@@ -886,23 +982,14 @@ elif "Tool 3" in tool:
         st.caption(f"Mechanical combined: **{sum(caps_a3.values())}** samples/yr")
 
     with cc2:
-        st.markdown('<div class="section-label">🟢 Coating Lab Capacities</div>', unsafe_allow_html=True)
-        cap_mode3 = st.radio("Mode", ["Combined (350)", "Individual"], key="t3_cap_mode",
-                             horizontal=True)
-        comb_cap3 = st.number_input("Combined Cap (samples/yr)", value=350,
-                                     min_value=1, key="t3_combined")
-        if cap_mode3 == "Individual":
-            bc1, bc2, bc3 = st.columns(3)
-            with bc1: cs3 = st.number_input("Cold Spray", value=140, min_value=1, key="t3_cs")
-            with bc2: hv3 = st.number_input("HVOF",       value=120, min_value=1, key="t3_hv")
-            with bc3: pl3 = st.number_input("Plasma",     value= 90, min_value=1, key="t3_pl")
-            caps_b3 = {"Cold Spray": cs3, "HVOF": hv3, "Plasma": pl3}
-            capacity_warning(caps_b3, comb_cap3)
-        else:
-            caps_b3 = {"Cold Spray": round(comb_cap3*140/350),
-                       "HVOF": round(comb_cap3*120/350),
-                       "Plasma": round(comb_cap3*90/350)}
-            st.caption(f"Auto-split: CS={caps_b3['Cold Spray']}, HVOF={caps_b3['HVOF']}, Plasma={caps_b3['Plasma']}")
+        st.markdown('<div class="section-label">🟢 Coating Lab Capacities (each independent)</div>', unsafe_allow_html=True)
+        bc1, bc2, bc3 = st.columns(3)
+        with bc1: cs3 = st.number_input("Cold Spray", value=350, min_value=1, key="t3_cs")
+        with bc2: hv3 = st.number_input("HVOF",       value=350, min_value=1, key="t3_hv")
+        with bc3: pl3 = st.number_input("Plasma",     value=350, min_value=1, key="t3_pl")
+        caps_b3 = {"Cold Spray": cs3, "HVOF": hv3, "Plasma": pl3}
+        comb_cap3 = sum(caps_b3.values())  # for reference only
+        st.caption(f"Weekly caps → CS: {cs3/52:.1f}/wk | HVOF: {hv3/52:.1f}/wk | Plasma: {pl3/52:.1f}/wk")
 
     theme_name_3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t3_theme")
     theme_3 = core.COLOR_THEMES[theme_name_3]

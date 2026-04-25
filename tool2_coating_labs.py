@@ -22,14 +22,12 @@ import lab_core as core
 TOOL_TITLE    = "Coating Labs Dashboard (Cold Spray, HVOF, Plasma)"
 ALLOWED_TYPES = ["Cold Spray", "HVOF", "Plasma"]
 OUTPUT_FILE   = "Coating_Labs_Dashboard.xlsx"
-COMBINED_CAP  = 350   # total samples/year across all 3 coating labs
 
-# Individual capacities for single-lab utilization display
-# These sum to 350 (proportional split based on typical usage)
+# Each lab has its OWN independent capacity of 350 samples/year
 DEFAULT_CAPS = {
-    "Cold Spray": 140,  # largest portion
-    "HVOF":       120,
-    "Plasma":      90,
+    "Cold Spray": 350,
+    "HVOF":       350,
+    "Plasma":     350,
 }
 
 
@@ -226,7 +224,7 @@ def write_combined_chart(wb, weekly_df, types, years, combined_cap):
 #  MAIN GENERATOR
 # ═══════════════════════════════════════════════════════════
 
-def generate(input_path, individual_caps, combined_cap, theme, progress_cb=None):
+def generate(input_path, individual_caps, theme, progress_cb=None):
     def p(msg):
         if progress_cb: progress_cb(msg)
 
@@ -242,31 +240,24 @@ def generate(input_path, individual_caps, combined_cap, theme, progress_cb=None)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    p("📄 Sheet 1/8 — Weekly Planner…")
+    p("📄 Sheet 1/7 — Weekly Planner…")
     core.write_weekly_planner(wb, weekly_df, types, TOOL_TITLE)
 
-    p("🎨 Sheet 2/8 — Individual Utilization…")
+    p("🎨 Sheet 2/7 — Utilization…")
     core.write_utilization_sheet(wb, util_df, types, theme)
 
-    p("🔀 Sheet 3/8 — Combined Utilization…")
-    write_combined_sheet(wb, weekly_df, types, years, combined_cap)
-
-    p("📋 Sheet 4/8 — Summary…")
+    p("📋 Sheet 3/7 — Summary…")
     core.write_summary_sheet(wb, weekly_df, util_df, types, individual_caps, years,
                               TOOL_TITLE,
-                              cap_note=f"Combined max = {combined_cap} samples/yr  |  "
-                                       + "  ".join(f"{k}={v}" for k,v in individual_caps.items()))
+                              cap_note="  ".join(f"{k}={v}/yr" for k, v in individual_caps.items()))
 
-    p("📈 Sheet 5/8 — Utilization Chart…")
+    p("📈 Sheet 4/7 — Utilization Chart…")
     core.write_utilization_chart(wb, util_df, types, years)
 
-    p("📊 Sheet 6/8 — Capacity vs Demand…")
+    p("📊 Sheet 5/7 — Capacity vs Demand…")
     core.write_capacity_chart(wb, weekly_df, types, individual_caps, years)
 
-    p("📊 Sheet 7/8 — Combined Trend Chart…")
-    write_combined_chart(wb, weekly_df, types, years, combined_cap)
-
-    p("📊 Sheet 8/8 — Year-on-Year…")
+    p("📊 Sheet 6/7 — Year-on-Year…")
     core.write_yoy_chart(wb, weekly_df, types, years)
 
     # Gantt current year
@@ -274,7 +265,7 @@ def generate(input_path, individual_caps, combined_cap, theme, progress_cb=None)
     current_week = core.CURRENT_WEEK
     gantt_year   = current_year if current_year in years else max(years)
     gantt_week   = current_week if gantt_year == current_year else 52
-    p(f"🗓️  Gantt — {gantt_year}…")
+    p(f"🗓️  Sheet 7/7 — Gantt {gantt_year}…")
     core.write_gantt_current_year(wb, weekly_df, types, individual_caps,
                                    gantt_year, gantt_week)
 
@@ -291,12 +282,11 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"🏭  {TOOL_TITLE}")
-        self.geometry("740x700")
+        self.geometry("740x620")
         self.resizable(False, False)
         self.configure(bg="#F0F4F8")
         self.file_path    = tk.StringVar(value="No file selected")
         self.ind_caps     = {k: tk.IntVar(value=v) for k, v in DEFAULT_CAPS.items()}
-        self.combined_cap = tk.IntVar(value=COMBINED_CAP)
         self.theme_var    = tk.StringVar(value=list(core.COLOR_THEMES.keys())[0])
         self.progress_var = tk.StringVar(value="")
         self._build()
@@ -308,7 +298,7 @@ class App(tk.Tk):
         tk.Label(hdr, text="🏭  Coating Labs Dashboard",
                  bg="#1F5C1A", fg="white",
                  font=("Arial", 14, "bold")).pack(pady=8)
-        tk.Label(hdr, text="Cold Spray  |  HVOF  |  Plasma   —   Combined Capacity: 350 samples/yr",
+        tk.Label(hdr, text="Cold Spray  |  HVOF  |  Plasma   —   Each lab: 350 samples/yr (independent)",
                  bg="#1F5C1A", fg="#C6EFCE",
                  font=("Arial", 9)).pack()
 
@@ -324,23 +314,8 @@ class App(tk.Tk):
 
         ttk.Separator(main).pack(fill="x", pady=6)
 
-        # Combined capacity
-        self._sec(main, "🔗 Step 2 — Combined Total Capacity (samples/year)")
-        cf = tk.Frame(main, bg="#F0F4F8"); cf.pack(fill="x", pady=(0,4))
-        card = tk.Frame(cf, bg="#FFFFFF", bd=1, relief="groove", padx=14, pady=10)
-        card.pack(fill="x")
-        tk.Label(card, text="Combined Max Capacity (Cold Spray + HVOF + Plasma)",
-                 bg="#FFFFFF", font=("Arial", 10, "bold"), fg="#1F5C1A").pack(anchor="w")
-        tk.Label(card, text="Total samples allowed per year across ALL 3 coating labs",
-                 bg="#FFFFFF", font=("Arial", 8), fg="#666").pack(anchor="w")
-        tk.Spinbox(card, from_=1, to=9999, textvariable=self.combined_cap,
-                   width=10, font=("Arial", 11),
-                   relief="flat", bd=1).pack(anchor="w", pady=(4,0))
-
-        ttk.Separator(main).pack(fill="x", pady=6)
-
-        # Individual caps
-        self._sec(main, "⚙️ Step 3 — Individual Lab Capacities (must sum ≤ combined)")
+        # Individual caps only — each lab is independent
+        self._sec(main, "⚙️ Step 2 — Individual Lab Capacities (samples/year — each lab independent)")
         icf = tk.Frame(main, bg="#F0F4F8"); icf.pack(fill="x", pady=(0,8))
         for i, (name, var) in enumerate(self.ind_caps.items()):
             card2 = tk.Frame(icf, bg="#FFFFFF", bd=1, relief="groove", padx=12, pady=8)
@@ -348,7 +323,7 @@ class App(tk.Tk):
             icf.columnconfigure(i, weight=1)
             tk.Label(card2, text=name, bg="#FFFFFF",
                      font=("Arial", 10, "bold"), fg="#1F5C1A").pack(anchor="w")
-            tk.Label(card2, text="samples/year", bg="#FFFFFF",
+            tk.Label(card2, text="samples/year (independent)", bg="#FFFFFF",
                      font=("Arial", 8), fg="#666").pack(anchor="w")
             tk.Spinbox(card2, from_=1, to=9999, textvariable=var,
                        width=10, font=("Arial", 11),
@@ -357,7 +332,7 @@ class App(tk.Tk):
         ttk.Separator(main).pack(fill="x", pady=6)
 
         # Theme
-        self._sec(main, "🎨 Step 4 — Color Theme")
+        self._sec(main, "🎨 Step 3 — Color Theme")
         tf = tk.Frame(main, bg="#F0F4F8"); tf.pack(fill="x", pady=(0,8))
         for i, name in enumerate(core.COLOR_THEMES):
             tk.Radiobutton(tf, text=name, variable=self.theme_var,
@@ -405,15 +380,14 @@ class App(tk.Tk):
         if path == "No file selected" or not os.path.isfile(path):
             messagebox.showerror("No File", "Please select a valid Excel file.")
             return
-        ind  = {k: v.get() for k, v in self.ind_caps.items()}
-        comb = self.combined_cap.get()
+        ind   = {k: v.get() for k, v in self.ind_caps.items()}
         theme = core.COLOR_THEMES[self.theme_var.get()]
         self.gen_btn.config(state="disabled", text="⏳ Generating…")
         self.prog_bar.start(10)
 
         def task():
             try:
-                out, warns = generate(path, ind, comb, theme,
+                out, warns = generate(path, ind, theme,
                     progress_cb=lambda m: self.after(0, lambda msg=m: self.progress_var.set(msg)))
                 self.after(0, lambda: self._ok(out, warns))
             except Exception as e:
