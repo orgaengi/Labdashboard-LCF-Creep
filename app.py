@@ -21,7 +21,7 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lab_core as core
 import generators as gen_module
-from generators import merge_files, GROUP_A, GROUP_B
+from generators import merge_files, GROUP_A, GROUP_B, GROUP_C
 
 # ──────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -737,12 +737,13 @@ def capacity_warning(individual_caps, combined_cap):
 
 
 # ──────────────────────────────────────────────────────────
-#  SESSION STATE — Chat
+#  SESSION STATE — Data Chat
 # ──────────────────────────────────────────────────────────
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
-if "chat_context" not in st.session_state:
-    st.session_state.chat_context = {}
+for _tk in ("data_tool1", "data_tool2", "data_tool3"):
+    if _tk not in st.session_state:
+        st.session_state[_tk] = None
 
 
 # ──────────────────────────────────────────────────────────
@@ -756,7 +757,8 @@ with st.sidebar:
         "Select Tool",
         ["🔵 Tool 1 — LCF & Creep",
          "🟢 Tool 2 — Coating Labs",
-         "🟣 Tool 3 — Comparison"],
+         "🟠 Tool 3 — Thermal Lab",
+         "🔴 Tool 4 — Comparison & PPT"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -766,98 +768,244 @@ with st.sidebar:
     st.markdown("**Output**\n\nExcel dashboard with 7–8 sheets including charts, Gantt, and pie charts.")
     st.markdown("---")
     st.caption(f"Current week: **{CURRENT_WEEK}** of {CURRENT_YEAR}")
-
-    # ── AI Chat Assistant in Sidebar ──────────────────────
     st.markdown("---")
-    st.markdown("## 🤖 AI Lab Assistant")
-    st.caption("Ask questions about your lab data or request changes to capacity settings.")
 
-    # Display chat history with bubble styling
+    # ── Rule-Based Data Assistant ──────────────────────────
+    st.markdown("---")
+    st.markdown("## 💬 Data Assistant")
+    st.caption("Ask questions about your uploaded lab data.")
+
+    # ── answer engine ──────────────────────────────────────
+    def _find_lab_type(question, all_types):
+        q = question.lower()
+        for t in sorted(all_types, key=len, reverse=True):
+            if all(w in q for w in t.lower().split()):
+                return t
+        return None
+
+    def _find_year_in_q(question):
+        import re as _re
+        m = _re.search(r'\b(20\d{2})\b', question)
+        return int(m.group(1)) if m else None
+
+    def answer_data_question(question: str, session_data: dict) -> str:
+        import math as _math
+        GROUP_LABEL_MAP = {
+            "data_tool1": "Mechanical (Tool 1)",
+            "data_tool2": "Coating (Tool 2)",
+            "data_tool3": "Thermal (Tool 3)",
+        }
+        if not session_data:
+            return ("No data loaded yet. Upload a file in any tool tab first, "
+                    "then come back and ask a question.")
+        q = question.lower().strip()
+        all_types_map = {}
+        for tk, td in session_data.items():
+            for t in td.get("types", []):
+                all_types_map[t] = tk
+        all_types = list(all_types_map.keys())
+
+        # 2 — utilization
+        if any(kw in q for kw in ["utilization", "utilisation", "util"]):
+            lab  = _find_lab_type(q, all_types)
+            year = _find_year_in_q(q)
+            if lab:
+                tk      = all_types_map[lab]
+                udf     = session_data[tk]["util_df"]
+                yr_data = udf[udf["Year"] == year] if year else udf
+                if yr_data.empty or lab not in yr_data.columns:
+                    return f"No utilization data found for **{lab}**{' in '+str(year) if year else ''}."
+                peak   = yr_data[lab].max()
+                avg    = yr_data[lab].mean()
+                status = "🔴 OVERLOADED" if peak > 1 else "🟡 Near Cap" if peak >= 0.8 else "🟢 Healthy"
+                yr_str = f" in {year}" if year else " (all years)"
+                return (f"**{lab}** utilization{yr_str}:\n"
+                        f"• Peak: **{peak:.1%}** | Avg: **{avg:.1%}**\n"
+                        f"• Status: {status}")
+            lines = ["Utilization across all loaded labs:"]
+            for t in all_types:
+                tk  = all_types_map[t]; udf = session_data[tk]["util_df"]
+                if t not in udf.columns: continue
+                p   = udf[t].max(); a = udf[t].mean()
+                st2 = "🔴" if p > 1 else "🟡" if p >= 0.8 else "🟢"
+                lines.append(f"  {st2} **{t}**: peak {p:.1%} | avg {a:.1%}")
+            return "\n".join(lines)
+
+        # 3 — highest demand
+        if any(kw in q for kw in ["highest demand","most demand","peak demand",
+                                   "max demand","most samples"]):
+            lab = _find_lab_type(q, all_types)
+            results = []
+            for t in ([lab] if lab else all_types):
+                tk = all_types_map[t]; annual = session_data[tk]["annual"]
+                best_yr, best_val = None, -1
+                for yr, vals in annual.items():
+                    v = vals.get(t, 0)
+                    if v > best_val: best_val, best_yr = v, yr
+                if best_yr is not None: results.append((t, best_yr, best_val))
+            if not results: return "No demand data found."
+            results.sort(key=lambda x: x[2], reverse=True)
+            lines = ["**Highest demand by lab:**"]
+            for t, yr, val in results[:6]:
+                lines.append(f"  • **{t}**: {yr} — **{val:,.0f}** samples")
+            return "\n".join(lines)
+
+        # 4 — most overloaded
+        if any(kw in q for kw in ["overload","over capacity","highest utilization",
+                                   "highest utilisation","most stressed",
+                                   "most utilized","most utilised"]):
+            best = None
+            for t in all_types:
+                tk = all_types_map[t]; udf = session_data[tk]["util_df"]
+                if t not in udf.columns: continue
+                for yr in udf["Year"].unique():
+                    p = udf[udf["Year"]==yr][t].max()
+                    if best is None or p > best[2]: best = (t, int(yr), p)
+            if best is None: return "No utilization data found."
+            t, yr, p = best
+            status = "🔴 OVERLOADED" if p > 1 else "🟡 Near Cap" if p >= 0.8 else "🟢 Healthy"
+            return (f"Most loaded lab: **{t}** in **{yr}**\n"
+                    f"• Peak utilization: **{p:.1%}** — {status}")
+
+        # 5 — capacity for 80%
+        if any(kw in q for kw in ["capacity needed","capacity for 80",
+                                   "need for 80","80% capacity","80 percent",
+                                   "capacity increase","how much capacity"]):
+            lab = _find_lab_type(q, all_types)
+            if not lab:
+                return ("Please name a lab type. Example:\n"
+                        "'What capacity do I need for 80% in Cold Spray?'")
+            tk     = all_types_map[lab]
+            annual = session_data[tk]["annual"]
+            cap    = session_data[tk]["capacities"].get(lab, 0)
+            yrs    = sorted(annual.keys(), reverse=True)
+            if not yrs: return f"No demand data found for **{lab}**."
+            last_yr = yrs[0]
+            demand  = annual[last_yr].get(lab, 0)
+            needed  = _math.ceil(demand / 0.8)
+            util_now = demand / cap if cap > 0 else 0
+            delta    = needed - cap
+            arrow    = f"↑ +{delta}" if delta > 0 else "✅ already sufficient"
+            return (f"**{lab}** capacity planning ({last_yr}):\n"
+                    f"• Demand: **{demand:,.0f}** samples\n"
+                    f"• Current capacity: **{cap:,}**/yr ({util_now:.1%} utilization)\n"
+                    f"• Needed for ≤80% util: **{needed:,}**/yr ({arrow})")
+
+        # 6 — list labs
+        if any(kw in q for kw in ["which lab","list lab","what lab",
+                                   "show lab","all lab","available lab"]):
+            lines = ["**Labs currently loaded:**"]
+            for tk, td in session_data.items():
+                label = GROUP_LABEL_MAP.get(tk, tk)
+                types = td.get("types", []); yrs = td.get("years", [])
+                caps  = td.get("capacities", {})
+                yr_str = f"{min(yrs)}–{max(yrs)}" if yrs else "—"
+                lines.append(f"\n**{label}** ({yr_str})")
+                for t in types:
+                    lines.append(f"  • {t}  ({caps.get(t,'?')}/yr)")
+            return "\n".join(lines)
+
+        # 7 — summary
+        if any(kw in q for kw in ["summary","overview","give me a summary",
+                                   "show summary","what do i have"]):
+            lines = ["**Dashboard summary:**"]
+            for tk, td in session_data.items():
+                label  = GROUP_LABEL_MAP.get(tk, tk)
+                types  = td.get("types", []); yrs = td.get("years", [])
+                annual = td.get("annual", {}); caps = td.get("capacities", {})
+                udf    = td.get("util_df", None)
+                if not yrs: continue
+                last_yr = max(yrs)
+                dem  = sum(annual.get(last_yr, {}).get(t, 0) for t in types)
+                cap  = sum(caps.values())
+                util = dem / cap if cap > 0 else 0
+                peak = 0
+                if udf is not None:
+                    yr_udf = udf[udf["Year"] == last_yr]
+                    for t in types:
+                        if t in yr_udf.columns:
+                            v = yr_udf[t].max()
+                            if v > peak: peak = v
+                status = "🔴" if peak > 1 else "🟡" if peak >= 0.8 else "🟢"
+                lines.append(
+                    f"\n{status} **{label}** — {', '.join(types)}\n"
+                    f"   {last_yr}: demand **{dem:,.0f}** | util **{util:.0%}** | peak **{peak:.0%}**"
+                )
+            return "\n".join(lines)
+
+        # 8 — trend
+        if any(kw in q for kw in ["trend","annual trend","year by year",
+                                   "over the years","each year","by year"]):
+            lab = _find_lab_type(q, all_types)
+            if not lab:
+                lines = ["**Annual demand trends:**"]
+                for t in all_types:
+                    tk     = all_types_map[t]; annual = session_data[tk]["annual"]
+                    vals   = " | ".join(f"{y}: {annual.get(y,{}).get(t,0):.0f}"
+                                        for y in sorted(annual.keys()))
+                    lines.append(f"  • **{t}**: {vals}")
+                return "\n".join(lines)
+            tk     = all_types_map[lab]; annual = session_data[tk]["annual"]
+            vals   = " | ".join(f"{y}: {annual.get(y,{}).get(lab,0):.0f}"
+                                for y in sorted(annual.keys()))
+            return f"**{lab}** annual demand:\n  {vals}"
+
+        # 9 — unrecognized
+        return (
+            "I can only answer questions about uploaded data. Try:\n"
+            "  • *'LCF utilization in 2024'*\n"
+            "  • *'Which lab is most overloaded?'*\n"
+            "  • *'Capacity needed for 80% in Cold Spray'*\n"
+            "  • *'Show me a summary'*\n"
+            "  • *'Highest demand for Plasma'*\n"
+            "  • *'Trend for Thermal Rig 1'*\n"
+            "  • *'List all labs'*"
+        )
+
+    # ── build session_data dict from loaded tools ──────────
+    def _build_session_data():
+        sd = {}
+        for tk in ("data_tool1", "data_tool2", "data_tool3"):
+            val = st.session_state.get(tk)
+            if val is not None:
+                sd[tk] = val
+        return sd
+
+    # ── chat bubble display ────────────────────────────────
     bubbles_html = '<div class="chat-wrap">'
-    for msg in st.session_state.chat_history[-10:]:
+    for msg in st.session_state.chat_history[-14:]:
         if msg["role"] == "user":
             bubbles_html += f'<div class="chat-user">🧑 {msg["content"]}</div>'
         else:
-            # Render line breaks from assistant
-            txt = msg["content"].replace("\n", "<br>")
-            bubbles_html += f'<div class="chat-bot">🤖 {txt}</div>'
+            txt = msg["content"].replace("\n", "<br>").replace("**", "<b>", 1)
+            # Bold markdown: simplistic pass
+            import re as _re2
+            txt = _re2.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>',
+                           msg["content"].replace("\n", "<br>"))
+            bubbles_html += f'<div class="chat-bot">💬 {txt}</div>'
     bubbles_html += "</div>"
     st.markdown(bubbles_html, unsafe_allow_html=True)
 
-    # Chat input
-    user_question = st.text_area("Your question:", key="chat_input", height=80,
-                                  placeholder="e.g. What is Cold Spray utilization in 2024?\nSuggest capacity for 80% utilization...")
-    
-    col_send, col_clear = st.columns(2)
-    with col_send:
-        send_clicked = st.button("💬 Ask", key="chat_send", use_container_width=True)
-    with col_clear:
+    # ── input + buttons ────────────────────────────────────
+    user_question = st.text_input(
+        "Ask:", key="chat_input", label_visibility="collapsed",
+        placeholder="e.g. LCF utilization in 2024 | capacity for 80% Plasma | summary",
+    )
+    col_ask, col_clr = st.columns(2)
+    with col_ask:
+        ask_clicked = st.button("Ask", key="chat_ask", use_container_width=True)
+    with col_clr:
         if st.button("🗑️ Clear", key="chat_clear", use_container_width=True):
             st.session_state.chat_history = []
             st.rerun()
 
-    if send_clicked and user_question.strip():
-        # Build context from current session state
-        ctx = st.session_state.get("chat_context", {})
-        context_str = ""
-        if ctx:
-            context_str = f"""
-Current dashboard context:
-- Tool: {ctx.get('tool', 'unknown')}
-- Lab types: {ctx.get('types', [])}
-- Years in data: {ctx.get('years', [])}
-- Capacities (samples/yr): {ctx.get('capacities', {})}
-- Latest year demand: {ctx.get('latest_demand', {})}
-- Peak utilization per lab: {ctx.get('peak_util', {})}
-"""
-        system_prompt = """You are an expert lab capacity planning assistant for a coating and mechanical testing lab.
-You help users understand utilization charts, interpret lab demand trends, and suggest capacity adjustments.
-
-Labs tracked:
-- Cold Spray, HVOF, Plasma (Coating Labs) — each has independent capacity
-- LCF, Creep (Mechanical Labs)
-
-Key concepts:
-- Utilization = Weekly demand / Weekly capacity. Green <80%, Yellow 80-100%, Red >100%
-- Weekly capacity = Annual capacity / 52
-- Seasonal demand patterns are applied (summer peaks, winter dips)
-
-When suggesting capacity changes, always give concrete numbers.
-Keep answers concise and actionable. Use bullet points for clarity."""
-
-        messages_to_send = []
-        for h in st.session_state.chat_history[-8:]:
-            messages_to_send.append({"role": h["role"], "content": h["content"]})
-        
-        user_msg_full = user_question.strip()
-        if context_str:
-            user_msg_full = f"{context_str}\n\nUser question: {user_question.strip()}"
-        
-        messages_to_send.append({"role": "user", "content": user_msg_full})
-        st.session_state.chat_history.append({"role": "user", "content": user_question.strip()})
-
-        with st.spinner("Thinking…"):
-            try:
-                import anthropic, os
-                api_key = (st.secrets.get("ANTHROPIC_API_KEY", None)
-                           if hasattr(st, "secrets") else None) or os.environ.get("ANTHROPIC_API_KEY")
-                if not api_key:
-                    st.error("❌ ANTHROPIC_API_KEY not set. See HOW_TO_RUN_LOCALLY.md Step 6.")
-                else:
-                    client = anthropic.Anthropic(api_key=api_key)
-                    response = client.messages.create(
-                        model="claude-sonnet-4-5-20251001",
-                        max_tokens=600,
-                        system=system_prompt,
-                        messages=messages_to_send,
-                    )
-                    answer = response.content[0].text
-                    st.session_state.chat_history.append({"role": "assistant", "content": answer})
-                    st.rerun()
-            except ImportError:
-                st.error("❌ Install anthropic: `pip install -r requirements.txt`")
-            except Exception as e:
-                st.error(f"❌ Chat error: {str(e)[:150]}")
+    if ask_clicked and user_question.strip():
+        q_text = user_question.strip()
+        sd     = _build_session_data()
+        answer = answer_data_question(q_text, sd)
+        st.session_state.chat_history.append({"role": "user",    "content": q_text})
+        st.session_state.chat_history.append({"role": "assistant","content": answer})
+        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -906,16 +1054,14 @@ if "Tool 1" in tool:
             wdf_1, udf_1, types_1, years_1 = core.build_weekly(df_1, col_map_1, caps_1)
             annual_1 = get_annual_totals(wdf_1, types_1, years_1)
 
-            # Expose data to AI chat assistant
-            last_y1_ctx = int(max(years_1))
-            st.session_state.chat_context = {
-                "tool": "LCF & Creep (Tool 1)",
-                "types": list(types_1),
-                "years": [int(y) for y in years_1],
+            # Wire data into the sidebar chat assistant
+            st.session_state["data_tool1"] = {
+                "types":      list(types_1),
+                "years":      [int(y) for y in years_1],
+                "annual":     {int(y): {t: float(annual_1.get(int(y),{}).get(t,0))
+                               for t in types_1} for y in years_1},
+                "util_df":    udf_1,
                 "capacities": caps_1,
-                "latest_demand": annual_1.get(last_y1_ctx, {}),
-                "peak_util": {t: f"{udf_1[udf_1['Year']==last_y1_ctx][t].max():.1%}"
-                              for t in types_1},
             }
 
             # KPI cards
@@ -1033,16 +1179,14 @@ elif "Tool 2" in tool:
             wdf_2, udf_2, types_2, years_2 = core.build_weekly(df_2, col_map_2, ind_caps_2)
             annual_2 = get_annual_totals(wdf_2, types_2, years_2)
 
-            # Expose data to AI chat assistant
-            last_y2_ctx = int(max(years_2))
-            st.session_state.chat_context = {
-                "tool": "Coating Labs (Tool 2)",
-                "types": list(types_2),
-                "years": [int(y) for y in years_2],
+            # Wire data into the sidebar chat assistant
+            st.session_state["data_tool2"] = {
+                "types":      list(types_2),
+                "years":      [int(y) for y in years_2],
+                "annual":     {int(y): {t: float(annual_2.get(int(y),{}).get(t,0))
+                               for t in types_2} for y in years_2},
+                "util_df":    udf_2,
                 "capacities": ind_caps_2,
-                "latest_demand": annual_2.get(last_y2_ctx, {}),
-                "peak_util": {t: f"{udf_2[udf_2['Year']==last_y2_ctx][t].max():.1%}"
-                              for t in types_2},
             }
 
             # Combined utilization KPIs
@@ -1137,54 +1281,202 @@ elif "Tool 2" in tool:
 
 
 # ══════════════════════════════════════════════════════════════════
-#  TOOL 3 — COMPARISON
+#  TOOL 3 — THERMAL LAB
 # ══════════════════════════════════════════════════════════════════
 
 elif "Tool 3" in tool:
     st.markdown("""
+    <div class="tool-header" style="background: linear-gradient(90deg, #7F3F00 0%, #C55A11 100%);">
+        <h2>🟠 Tool 3 — Thermal Lab Dashboard</h2>
+        <p>Thermal Rig occupancy planning — per-rig capacity tracking</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── File upload ───────────────────────────────────────
+    st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
+    uploaded_t3 = st.file_uploader("", type=["xlsx","xls"], key="t3_file",
+                                    label_visibility="collapsed")
+
+    # ── Capacity config ───────────────────────────────────
+    st.markdown('<div class="section-label">⚙️ Rig Capacities (samples/year)</div>', unsafe_allow_html=True)
+
+    tc1, tc2, tc3 = st.columns(3)
+    with tc1:
+        r1_cap = st.number_input("🔶 Thermal Rig 1", value=200, min_value=1, max_value=9999,
+                                  key="t3_r1")
+        st.caption(f"→ {r1_cap/52:.1f}/wk")
+    with tc2:
+        r2_cap = st.number_input("🔶 Thermal Rig 2", value=200, min_value=1, max_value=9999,
+                                  key="t3_r2")
+        st.caption(f"→ {r2_cap/52:.1f}/wk")
+    with tc3:
+        r3_cap = st.number_input("🔶 Thermal Rig 3", value=200, min_value=1, max_value=9999,
+                                  key="t3_r3")
+        st.caption(f"→ {r3_cap/52:.1f}/wk")
+
+    rig_caps_t3 = {
+        "Thermal Rig 1": r1_cap,
+        "Thermal Rig 2": r2_cap,
+        "Thermal Rig 3": r3_cap,
+    }
+    thermal_types = list(rig_caps_t3.keys())
+
+    theme_name_t3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t3_theme")
+    theme_t3 = core.COLOR_THEMES[theme_name_t3]
+
+    if uploaded_t3:
+        paths_t3 = load_uploaded_files([uploaded_t3])
+        df_t3, col_map_t3, err_t3, warn_t3 = core.load_and_filter(paths_t3[0], thermal_types)
+
+        if err_t3:
+            st.error("❌ " + "\n".join(err_t3))
+        else:
+            if warn_t3:
+                for w in warn_t3:
+                    st.warning(w)
+
+            wdf_t3, udf_t3, types_t3, years_t3 = core.build_weekly(df_t3, col_map_t3, rig_caps_t3)
+            annual_t3 = get_annual_totals(wdf_t3, types_t3, years_t3)
+
+            # Wire data into the sidebar chat assistant
+            st.session_state["data_tool3"] = {
+                "types":      list(types_t3),
+                "years":      [int(y) for y in years_t3],
+                "annual":     {int(y): {t: float(annual_t3.get(int(y),{}).get(t,0))
+                               for t in types_t3} for y in years_t3},
+                "util_df":    udf_t3,
+                "capacities": rig_caps_t3,
+            }
+
+            # KPI cards
+            st.markdown('<div class="section-label">📊 Key Metrics — Latest Year</div>',
+                        unsafe_allow_html=True)
+            show_kpi_row(types_t3, annual_t3, rig_caps_t3, years_t3)
+
+            # Charts in tabs
+            tabs_t3 = st.tabs(["📈 Utilization Trend", "📊 YoY + Pie Charts",
+                                "⚡ Capacity vs Demand", "🗓 Gantt", "📋 Data Table"])
+
+            with tabs_t3[0]:
+                fig_ut3 = chart_utilization_line(udf_t3, types_t3, years_t3,
+                                                  THEME_COLORS[theme_name_t3])
+                st.plotly_chart(fig_ut3, use_container_width=True)
+
+            with tabs_t3[1]:
+                fig_bar_t3, fig_pies_t3 = chart_yoy_bar_and_pie(
+                    annual_t3, types_t3, years_t3, THEME_COLORS[theme_name_t3])
+                st.plotly_chart(fig_bar_t3, use_container_width=True)
+                st.plotly_chart(fig_pies_t3, use_container_width=True)
+
+            with tabs_t3[2]:
+                fig_cap_t3 = chart_capacity_bar(wdf_t3, types_t3, rig_caps_t3, years_t3)
+                st.plotly_chart(fig_cap_t3, use_container_width=True)
+
+            with tabs_t3[3]:
+                gantt_yr_t3 = (CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_t3]
+                               else int(max(years_t3)))
+                gantt_wk_t3 = CURRENT_WEEK if gantt_yr_t3 == CURRENT_YEAR else 52
+                fig_gantt_t3 = chart_gantt(wdf_t3, types_t3, rig_caps_t3,
+                                            gantt_yr_t3, gantt_wk_t3)
+                st.plotly_chart(fig_gantt_t3, use_container_width=True)
+
+            with tabs_t3[4]:
+                st.markdown("**Utilization Summary (Peak & Avg per year)**")
+                show_util_table(udf_t3, types_t3, years_t3)
+                st.markdown("---")
+                st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
+                editable_bytes_t3 = make_editable_excel(
+                    wdf_t3, udf_t3, annual_t3, types_t3, rig_caps_t3, years_t3,
+                    title="Thermal Lab"
+                )
+                st.download_button(
+                    "⬇️ Download Editable Excel (Weekly Data + Summary)",
+                    data=editable_bytes_t3,
+                    file_name="Thermal_Lab_Editable.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="t3_editable_dl",
+                )
+
+            # Generate Full Excel Dashboard
+            st.markdown("---")
+            st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>',
+                        unsafe_allow_html=True)
+            if st.button("⚡ Generate Full Excel Dashboard", key="t3_gen"):
+                with st.spinner("Generating Thermal Lab dashboard..."):
+                    out_t3, warns_t3 = gen_module.generate_thermal(
+                        paths_t3[0], rig_caps_t3, theme_t3)
+                    with open(out_t3, 'rb') as f:
+                        excel_bytes_t3 = f.read()
+                st.download_button(
+                    "⬇️ Download Thermal_Lab_Dashboard.xlsx",
+                    data=excel_bytes_t3,
+                    file_name="Thermal_Lab_Dashboard.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="t3_dl",
+                )
+                st.success("✅ Dashboard ready! Click the button above to download.")
+    else:
+        st.info("👆 Upload an Excel file. Columns: Year | Type (Thermal Rig 1/2/3) | Value  "
+                "— or wide format: Year | Week | Thermal Rig 1 | Thermal Rig 2 | Thermal Rig 3")
+
+
+# ══════════════════════════════════════════════════════════════════
+#  TOOL 3 — COMPARISON
+# ══════════════════════════════════════════════════════════════════
+
+elif "Tool 4" in tool:
+    st.markdown("""
     <div class="tool-header" style="background: linear-gradient(90deg, #3D1F6E 0%, #7B5EA7 100%);">
-        <h2>🟣 Lab Comparison Dashboard</h2>
-        <p>Mechanical Labs (LCF + Creep) vs Coating Labs (Cold Spray + HVOF + Plasma)</p>
+        <h2>🔴 Tool 4 — Comparison & PPT</h2>
+        <p>Mechanical · Coating · Thermal — side-by-side comparison + PowerPoint export</p>
     </div>
     """, unsafe_allow_html=True)
 
     # ── Multi-file upload ─────────────────────────────────
-    st.markdown('<div class="section-label">📂 Upload Files (one or more — data merged automatically)</div>',
+    st.markdown('<div class="section-label">📂 Upload Files (1–3 files, one per group or one combined)</div>',
                 unsafe_allow_html=True)
     uploaded_3 = st.file_uploader(
         "",
         type=["xlsx","xls"],
         accept_multiple_files=True,
-        key="t3_files",
+        key="t4_files",
         label_visibility="collapsed",
-        help="Upload one combined file OR separate files per lab group. Duplicates are merged.",
+        help="Upload one combined file OR up to 3 separate files (one per lab group). Duplicates are merged.",
     )
     if uploaded_3:
         st.success(f"✅ {len(uploaded_3)} file(s) loaded: {', '.join(f.name for f in uploaded_3)}")
 
-    # ── Capacities ─────────────────────────────────────────
-    cc1, cc2 = st.columns(2)
+    # ── Capacities — 3 columns, one per group ─────────────
+    cc1, cc2, cc3 = st.columns(3)
     with cc1:
-        st.markdown('<div class="section-label">🔵 Mechanical Lab Capacities</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">🔵 Mechanical Capacities</div>', unsafe_allow_html=True)
         mc1, mc2 = st.columns(2)
         with mc1:
-            lcf_cap3 = st.number_input("LCF (samples/yr)", value=50, min_value=1, key="t3_lcf")
+            lcf_cap3  = st.number_input("LCF (samples/yr)",  value=50, min_value=1, key="t4_lcf")
         with mc2:
-            creep_cap3 = st.number_input("Creep (samples/yr)", value=22, min_value=1, key="t3_creep")
+            creep_cap3 = st.number_input("Creep (samples/yr)", value=22, min_value=1, key="t4_creep")
         caps_a3 = {"LCF": lcf_cap3, "Creep": creep_cap3}
-        st.caption(f"Mechanical combined: **{sum(caps_a3.values())}** samples/yr")
+        st.caption(f"Combined: **{sum(caps_a3.values())}**/yr")
 
     with cc2:
-        st.markdown('<div class="section-label">🟢 Coating Lab Capacities (each independent)</div>', unsafe_allow_html=True)
+        st.markdown('<div class="section-label">🟢 Coating Capacities</div>', unsafe_allow_html=True)
         bc1, bc2, bc3 = st.columns(3)
-        with bc1: cs3 = st.number_input("Cold Spray", value=350, min_value=1, key="t3_cs")
-        with bc2: hv3 = st.number_input("HVOF",       value=350, min_value=1, key="t3_hv")
-        with bc3: pl3 = st.number_input("Plasma",     value=350, min_value=1, key="t3_pl")
+        with bc1: cs3 = st.number_input("Cold Spray", value=350, min_value=1, key="t4_cs")
+        with bc2: hv3 = st.number_input("HVOF",       value=350, min_value=1, key="t4_hv")
+        with bc3: pl3 = st.number_input("Plasma",     value=350, min_value=1, key="t4_pl")
         caps_b3 = {"Cold Spray": cs3, "HVOF": hv3, "Plasma": pl3}
-        comb_cap3 = sum(caps_b3.values())  # for reference only
-        st.caption(f"Weekly caps → CS: {cs3/52:.1f}/wk | HVOF: {hv3/52:.1f}/wk | Plasma: {pl3/52:.1f}/wk")
+        st.caption(f"CS {cs3/52:.1f} | HVOF {hv3/52:.1f} | Plasma {pl3/52:.1f}  /wk")
 
-    theme_name_3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t3_theme")
+    with cc3:
+        st.markdown('<div class="section-label">🟠 Thermal Capacities</div>', unsafe_allow_html=True)
+        tc1_col, tc2_col, tc3_col = st.columns(3)
+        with tc1_col: tr1 = st.number_input("Rig 1", value=200, min_value=1, key="t4_r1")
+        with tc2_col: tr2 = st.number_input("Rig 2", value=200, min_value=1, key="t4_r2")
+        with tc3_col: tr3 = st.number_input("Rig 3", value=200, min_value=1, key="t4_r3")
+        caps_c3 = {"Thermal Rig 1": tr1, "Thermal Rig 2": tr2, "Thermal Rig 3": tr3}
+        st.caption(f"Rig1 {tr1/52:.1f} | Rig2 {tr2/52:.1f} | Rig3 {tr3/52:.1f}  /wk")
+
+    theme_name_3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t4_theme")
     theme_3 = core.COLOR_THEMES[theme_name_3]
 
     if uploaded_3:
@@ -1192,7 +1484,7 @@ elif "Tool 3" in tool:
         merged_df, col_map_3, errors_3, file_log_3 = merge_files(paths_3)
 
         for log_line in file_log_3:
-            if log_line.startswith("✓") or log_line.startswith("OK"):
+            if log_line.startswith("OK"):
                 st.success(log_line)
             elif "WARNING" in log_line:
                 st.warning(log_line)
@@ -1200,109 +1492,267 @@ elif "Tool 3" in tool:
         if errors_3:
             st.error("❌ " + "\n".join(errors_3))
         else:
-            tc3 = col_map_3["type"]
-            df_a3 = merged_df[merged_df[tc3].isin(GROUP_A["types"])].copy()
-            df_b3 = merged_df[merged_df[tc3].isin(GROUP_B["types"])].copy()
+            tc3_col_name = col_map_3["type"]
+            df_a3 = merged_df[merged_df[tc3_col_name].isin(GROUP_A["types"])].copy()
+            df_b3 = merged_df[merged_df[tc3_col_name].isin(GROUP_B["types"])].copy()
+            df_c3 = merged_df[merged_df[tc3_col_name].isin(list(caps_c3.keys()))].copy()
 
             if df_a3.empty:
                 st.error(f"No Mechanical lab data found. Need: {GROUP_A['types']}")
-            elif df_b3.empty:
+                st.stop()
+            if df_b3.empty:
                 st.error(f"No Coating lab data found. Need: {GROUP_B['types']}")
+                st.stop()
+
+            has_c3 = not df_c3.empty
+            if not has_c3:
+                st.warning("⚠️ No Thermal Rig data found — Group C omitted from charts.")
+
+            wdf_a3, udf_a3, types_a3, years_a3 = core.build_weekly(df_a3, col_map_3, caps_a3)
+            wdf_b3, udf_b3, types_b3, years_b3 = core.build_weekly(df_b3, col_map_3, caps_b3)
+            years_3 = sorted(set(list(years_a3)) | set(list(years_b3)))
+            annual_a3 = get_annual_totals(wdf_a3, types_a3, years_a3)
+            annual_b3 = get_annual_totals(wdf_b3, types_b3, years_b3)
+
+            if has_c3:
+                wdf_c3, udf_c3, types_c3, years_c3 = core.build_weekly(df_c3, col_map_3, caps_c3)
+                years_3 = sorted(set(years_3) | set(list(years_c3)))
+                annual_c3 = get_annual_totals(wdf_c3, types_c3, years_c3)
             else:
-                wdf_a3, udf_a3, types_a3, years_a3 = core.build_weekly(df_a3, col_map_3, caps_a3)
-                wdf_b3, udf_b3, types_b3, years_b3 = core.build_weekly(df_b3, col_map_3, caps_b3)
-                years_3 = sorted(set(list(years_a3)) | set(list(years_b3)))
-                annual_a3 = get_annual_totals(wdf_a3, types_a3, years_a3)
-                annual_b3 = get_annual_totals(wdf_b3, types_b3, years_b3)
+                wdf_c3 = udf_c3 = types_c3 = years_c3 = None
+                annual_c3 = {}
 
-                # Summary metrics
-                st.markdown('<div class="section-label">📊 Group Utilization Summary</div>',
-                            unsafe_allow_html=True)
-                last_y3 = int(max(years_3))
-                sum_caps_a = sum(caps_a3.values())
-                sum_caps_b = comb_cap3
+            # ── KPI summary ───────────────────────────────
+            last_y3 = int(max(years_3))
+            sum_caps_a3 = sum(caps_a3.values())
+            sum_caps_b3 = sum(caps_b3.values())
+            sum_caps_c3 = sum(caps_c3.values())
 
-                dem_a3 = sum(annual_a3.get(last_y3, {}).get(t, 0) for t in types_a3)
-                dem_b3 = sum(annual_b3.get(last_y3, {}).get(t, 0) for t in types_b3)
-                u_a3   = dem_a3 / sum_caps_a if sum_caps_a > 0 else 0
-                u_b3   = dem_b3 / sum_caps_b if sum_caps_b > 0 else 0
+            dem_a3 = sum(annual_a3.get(last_y3, {}).get(t, 0) for t in types_a3)
+            dem_b3 = sum(annual_b3.get(last_y3, {}).get(t, 0) for t in types_b3)
+            dem_c3 = (sum(annual_c3.get(last_y3, {}).get(t, 0) for t in types_c3)
+                      if has_c3 else 0)
+            u_a3 = dem_a3 / sum_caps_a3 if sum_caps_a3 > 0 else 0
+            u_b3 = dem_b3 / sum_caps_b3 if sum_caps_b3 > 0 else 0
+            u_c3 = dem_c3 / sum_caps_c3 if sum_caps_c3 > 0 else 0
 
-                col_s1, col_s2 = st.columns(2)
-                with col_s1:
-                    cls_a = "red" if u_a3 > 1 else "amber" if u_a3 >= 0.8 else "green"
-                    st.markdown(f"""<div class="metric-card {cls_a}">
-                        <div style="font-size:12px;color:#666;font-weight:700;">🔵 Mechanical Labs ({last_y3})</div>
-                        <div style="font-size:26px;font-weight:800;color:#1A4E8A;">{dem_a3:.0f} samples</div>
-                        <div style="font-size:13px;">Utilization: {u_a3:.0%} of {sum_caps_a}/yr capacity</div>
+            st.markdown('<div class="section-label">📊 Group Utilization — Latest Year</div>',
+                        unsafe_allow_html=True)
+            kpi_col1, kpi_col2, kpi_col3 = st.columns(3)
+            for col_kpi, label, dem, cap_sum, util, color in [
+                (kpi_col1, "🔵 Mechanical", dem_a3, sum_caps_a3, u_a3, "#1A4E8A"),
+                (kpi_col2, "🟢 Coating",    dem_b3, sum_caps_b3, u_b3, "#1F5C1A"),
+                (kpi_col3, "🟠 Thermal",    dem_c3, sum_caps_c3, u_c3, "#7F3F00"),
+            ]:
+                cls = "red" if util > 1 else "amber" if util >= 0.8 else "green"
+                with col_kpi:
+                    st.markdown(f"""<div class="metric-card {cls}">
+                        <div style="font-size:12px;color:#666;font-weight:700;">{label} ({last_y3})</div>
+                        <div style="font-size:26px;font-weight:800;color:{color};">{dem:.0f} samples</div>
+                        <div style="font-size:13px;">Utilization: {util:.0%} of {cap_sum}/yr</div>
                     </div>""", unsafe_allow_html=True)
-                with col_s2:
-                    cls_b = "red" if u_b3 > 1 else "amber" if u_b3 >= 0.8 else "green"
-                    st.markdown(f"""<div class="metric-card {cls_b}">
-                        <div style="font-size:12px;color:#666;font-weight:700;">🟢 Coating Labs ({last_y3})</div>
-                        <div style="font-size:26px;font-weight:800;color:#1F5C1A;">{dem_b3:.0f} samples</div>
-                        <div style="font-size:13px;">Utilization: {u_b3:.0%} of {sum_caps_b}/yr capacity</div>
-                    </div>""", unsafe_allow_html=True)
 
-                tabs3 = st.tabs(["📊 Comparison Charts", "🥧 YoY Pie Charts",
-                                  "📈 Utilization Trend", "🗓 Gantt", "📋 Data Tables"])
+            # ── Build figures ─────────────────────────────
+            # Tab 1 — 3-panel comparison bar chart
+            def chart_comparison_3groups(annual_a, annual_b, annual_c, types_a, types_b, types_c,
+                                          years, cap_a, cap_b, cap_c, has_c):
+                n_panels = 3 if has_c else 2
+                panel_titles = [GROUP_A["name"], GROUP_B["name"]]
+                if has_c:
+                    panel_titles.append("Thermal Lab")
+                fig = make_subplots(rows=1, cols=n_panels, subplot_titles=panel_titles)
+                col_maps_a = ["#1F3864","#2E75B6","#9DC3E6"]
+                col_maps_b = ["#1F5C1A","#70AD47","#C6EFCE"]
+                col_maps_c = ["#7F3F00","#C55A11","#F4B183"]
+                for ti, t in enumerate(types_a):
+                    vals = [annual_a.get(int(y), {}).get(t, 0) for y in years]
+                    fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
+                                         marker_color=col_maps_a[ti % 3],
+                                         text=[f"{v:.0f}" for v in vals],
+                                         textposition="outside", legendgroup="A"), row=1, col=1)
+                for ti, t in enumerate(types_b):
+                    vals = [annual_b.get(int(y), {}).get(t, 0) for y in years]
+                    fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
+                                         marker_color=col_maps_b[ti % 3],
+                                         text=[f"{v:.0f}" for v in vals],
+                                         textposition="outside", legendgroup="B"), row=1, col=2)
+                if has_c:
+                    for ti, t in enumerate(types_c):
+                        vals = [annual_c.get(int(y), {}).get(t, 0) for y in years]
+                        fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
+                                             marker_color=col_maps_c[ti % 3],
+                                             text=[f"{v:.0f}" for v in vals],
+                                             textposition="outside", legendgroup="C"), row=1, col=3)
+                fig.add_hline(y=cap_a, line_dash="dot", line_color="#1A4E8A",
+                               annotation_text=f"Cap A:{cap_a}", row=1, col=1)
+                fig.add_hline(y=cap_b, line_dash="dot", line_color="#1F5C1A",
+                               annotation_text=f"Cap B:{cap_b}", row=1, col=2)
+                if has_c:
+                    fig.add_hline(y=cap_c, line_dash="dot", line_color="#7F3F00",
+                                   annotation_text=f"Cap C:{cap_c}", row=1, col=3)
+                fig.update_layout(barmode="group", height=480,
+                                   title="Annual Demand Comparison — All 3 Lab Groups",
+                                   font=dict(family="Arial", size=11),
+                                   paper_bgcolor="white", plot_bgcolor="white",
+                                   legend=dict(orientation="h", y=-0.2),
+                                   margin=dict(b=100, t=60))
+                return fig
 
-                with tabs3[0]:
-                    fig_cmp = chart_comparison_grouped(
-                        annual_a3, annual_b3, types_a3, types_b3,
-                        years_3, sum_caps_a, sum_caps_b)
-                    st.plotly_chart(fig_cmp, use_container_width=True)
+            # Tab 3 — 3-group utilisation line chart
+            def chart_util_3groups(wdf_a, wdf_b, wdf_c, types_a, types_b, types_c,
+                                    years, cap_a, cap_b, cap_c, has_c):
+                months = ["Jan","Feb","Mar","Apr","May","Jun",
+                          "Jul","Aug","Sep","Oct","Nov","Dec"]
+                fig = go.Figure()
+                plot_yrs = list(years)[-3:]
+                dash_styles = ["solid", "dash", "dot"]
+                for yi, year in enumerate(plot_yrs):
+                    dash = dash_styles[yi % 3]
+                    for wdf, cap_total, types, label, color in [
+                        (wdf_a, cap_a, types_a, "Mechanical", "#1A4E8A"),
+                        (wdf_b, cap_b, types_b, "Coating",    "#1F5C1A"),
+                    ] + ([(wdf_c, cap_c, types_c, "Thermal", "#C55A11")] if has_c else []):
+                        yd = wdf[wdf["Year"] == year].copy()
+                        yd["_m"] = yd["Week"].apply(core.week_to_month)
+                        monthly = []
+                        for m in range(12):
+                            tot = sum(yd[yd["_m"]==m+1][t].mean()
+                                      for t in types if t in yd.columns)
+                            cap_wk = cap_total / 52
+                            util = tot / cap_wk if cap_wk > 0 and not math.isnan(tot) else 0
+                            monthly.append(util)
+                        fig.add_trace(go.Scatter(
+                            x=months, y=monthly,
+                            name=f"{label} {year}",
+                            line=dict(color=color, width=2, dash=dash),
+                            mode="lines+markers", marker=dict(size=5),
+                        ))
+                fig.add_hline(y=1.0, line_dash="dot", line_color="#FF4444",
+                               annotation_text="100%", annotation_position="right")
+                fig.add_hline(y=0.8, line_dash="dot", line_color="#FFD700",
+                               annotation_text="80%", annotation_position="right")
+                fig.update_layout(
+                    title="Monthly Utilization % — All Groups (last 3 years)",
+                    xaxis_title="Month", yaxis_title="Utilization",
+                    yaxis_tickformat=".0%", height=440,
+                    font=dict(family="Arial", size=12),
+                    paper_bgcolor="white", plot_bgcolor="white",
+                    legend=dict(orientation="h", y=-0.4), margin=dict(b=120),
+                )
+                return fig
 
-                with tabs3[1]:
-                    st.subheader("🔵 Mechanical Labs — Process Share")
-                    _, fig_pie_a = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
-                                                          THEME_COLORS[theme_name_3])
-                    st.plotly_chart(fig_pie_a, use_container_width=True)
+            fig_cmp3 = chart_comparison_3groups(
+                annual_a3, annual_b3, annual_c3,
+                types_a3, types_b3, types_c3 or [],
+                years_3, sum_caps_a3, sum_caps_b3, sum_caps_c3, has_c3)
 
-                    st.subheader("🟢 Coating Labs — Process Share")
-                    _, fig_pie_b = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
-                                                          THEME_COLORS[theme_name_3])
-                    st.plotly_chart(fig_pie_b, use_container_width=True)
+            fig_util3 = chart_util_3groups(
+                wdf_a3, wdf_b3, wdf_c3, types_a3, types_b3, types_c3 or [],
+                years_3, sum_caps_a3, sum_caps_b3, sum_caps_c3, has_c3)
 
-                with tabs3[2]:
-                    fig_util3 = chart_util_comparison_line(
-                        wdf_a3, wdf_b3, types_a3, types_b3,
-                        years_3, sum_caps_a, sum_caps_b)
-                    st.plotly_chart(fig_util3, use_container_width=True)
+            # Gantt figures
+            g_yr3 = CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_3] else int(max(years_3))
+            g_wk3 = CURRENT_WEEK if g_yr3 == CURRENT_YEAR else 52
+            fig_ga3 = chart_gantt(wdf_a3, types_a3, caps_a3, g_yr3, g_wk3)
+            fig_gb3 = chart_gantt(wdf_b3, types_b3, caps_b3, g_yr3, g_wk3)
+            fig_gc3 = (chart_gantt(wdf_c3, types_c3, caps_c3, g_yr3, g_wk3)
+                       if has_c3 else None)
 
-                with tabs3[3]:
-                    g_yr3 = CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_3] else int(max(years_3))
-                    g_wk3 = CURRENT_WEEK if g_yr3 == CURRENT_YEAR else 52
-                    col_g1, col_g2 = st.columns(2)
-                    with col_g1:
-                        st.markdown("**🔵 Mechanical**")
-                        fig_ga = chart_gantt(wdf_a3, types_a3, caps_a3, g_yr3, g_wk3)
-                        st.plotly_chart(fig_ga, use_container_width=True)
-                    with col_g2:
-                        st.markdown("**🟢 Coating**")
-                        fig_gb = chart_gantt(wdf_b3, types_b3, caps_b3, g_yr3, g_wk3)
-                        st.plotly_chart(fig_gb, use_container_width=True)
+            # ── TABS ─────────────────────────────────────
+            tabs4 = st.tabs(["📊 Comparison Charts", "🥧 YoY Pie Charts",
+                              "📈 Utilization Trend", "🗓 Gantt", "📋 Data Tables"])
 
-                with tabs3[4]:
-                    st.markdown("**🔵 Mechanical Labs**")
-                    show_util_table(udf_a3, types_a3, years_a3)
-                    st.markdown("**🟢 Coating Labs**")
-                    show_util_table(udf_b3, types_b3, years_b3)
+            with tabs4[0]:
+                st.plotly_chart(fig_cmp3, use_container_width=True)
 
-                # Excel export
-                st.markdown("---")
-                st.markdown('<div class="section-label">💾 Generate Excel Comparison Dashboard</div>',
-                            unsafe_allow_html=True)
-                if st.button("⚡ Generate Full Excel Dashboard", key="t3_gen"):
-                    with st.spinner("Generating..."):
-                        out3, warns3 = gen_module.generate_comparison(paths_3, caps_a3, caps_b3, theme_3)
-                        with open(out3, 'rb') as f: excel_bytes3 = f.read()
+            with tabs4[1]:
+                st.subheader("🔵 Mechanical Labs — Process Share")
+                _, fig_pie_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
+                                                        THEME_COLORS[theme_name_3])
+                st.plotly_chart(fig_pie_a3, use_container_width=True)
+                st.subheader("🟢 Coating Labs — Process Share")
+                _, fig_pie_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
+                                                        THEME_COLORS[theme_name_3])
+                st.plotly_chart(fig_pie_b3, use_container_width=True)
+                if has_c3:
+                    st.subheader("🟠 Thermal Lab — Process Share")
+                    _, fig_pie_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
+                                                            THEME_COLORS[theme_name_3])
+                    st.plotly_chart(fig_pie_c3, use_container_width=True)
+
+            with tabs4[2]:
+                st.plotly_chart(fig_util3, use_container_width=True)
+
+            with tabs4[3]:
+                gcol1, gcol2, gcol3 = st.columns(3)
+                with gcol1:
+                    st.markdown("**🔵 Mechanical**")
+                    st.plotly_chart(fig_ga3, use_container_width=True)
+                with gcol2:
+                    st.markdown("**🟢 Coating**")
+                    st.plotly_chart(fig_gb3, use_container_width=True)
+                with gcol3:
+                    st.markdown("**🟠 Thermal**")
+                    if has_c3:
+                        st.plotly_chart(fig_gc3, use_container_width=True)
+                    else:
+                        st.info("No Thermal data uploaded.")
+
+            with tabs4[4]:
+                st.markdown("**🔵 Mechanical Labs**")
+                show_util_table(udf_a3, types_a3, years_a3)
+                st.markdown("**🟢 Coating Labs**")
+                show_util_table(udf_b3, types_b3, years_b3)
+                if has_c3:
+                    st.markdown("**🟠 Thermal Lab**")
+                    show_util_table(udf_c3, types_c3, years_c3)
+
+            # ── Export buttons ────────────────────────────
+            st.markdown("---")
+            st.markdown('<div class="section-label">💾 Export Dashboards</div>',
+                        unsafe_allow_html=True)
+            exp_col1, exp_col2 = st.columns(2)
+
+            with exp_col1:
+                if st.button("⚡ Generate Full Excel Dashboard", key="t4_gen"):
+                    with st.spinner("Generating Excel..."):
+                        out3, warns3 = gen_module.generate_comparison(
+                            paths_3, caps_a3, caps_b3, theme_3, caps_c=caps_c3)
+                        with open(out3, 'rb') as f:
+                            excel_bytes3 = f.read()
                     st.download_button(
                         "⬇️ Download Lab_Comparison_Dashboard.xlsx",
                         data=excel_bytes3,
                         file_name="Lab_Comparison_Dashboard.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key="t3_dl",
+                        key="t4_dl",
                     )
-                    st.success("✅ Done!")
+                    st.success("✅ Excel ready!")
+
+            with exp_col2:
+                if st.button("📊 Generate PPT Report", key="t4_ppt_gen"):
+                    with st.spinner("Building PowerPoint (rendering charts to PNG)…"):
+                        try:
+                            ppt_bytes = gen_module.generate_comparison_ppt(
+                                wdf_a3, wdf_b3, wdf_c3,
+                                annual_a3, annual_b3, annual_c3,
+                                types_a3, types_b3, types_c3 or [],
+                                caps_a3, caps_b3, caps_c3,
+                                years_3,
+                                fig_cmp3, fig_util3,
+                                [fig_ga3, fig_gb3, fig_gc3],
+                            )
+                            st.download_button(
+                                "⬇️ Download Lab_Occupancy_Report.pptx",
+                                data=ppt_bytes,
+                                file_name="Lab_Occupancy_Report.pptx",
+                                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                                key="t4_ppt_dl",
+                            )
+                            st.success("✅ PowerPoint ready! 6 slides generated.")
+                        except ImportError as e:
+                            st.error(f"❌ {e}")
+                        except Exception as e:
+                            st.error(f"❌ PPT error: {str(e)[:200]}")
     else:
-        st.info("👆 Upload one or more Excel files. Works with a single combined file or separate files per lab group.")
+        st.info("👆 Upload 1–3 Excel files — one combined file or one per lab group (Mechanical, Coating, Thermal).")
