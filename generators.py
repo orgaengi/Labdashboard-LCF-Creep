@@ -28,7 +28,7 @@ import openpyxl
 
 # ── Tool-specific config ──────────────────────────────────
 TOOL_TITLE   = "LCF & Creep Lab Dashboard"
-ALLOWED_TYPES = ["LCF", "Creep"]
+LCF_ALLOWED_TYPES = ["LCF", "Creep"]          # unique name: avoids collision with coating
 OUTPUT_FILE   = "LCF_Creep_Dashboard.xlsx"
 
 DEFAULT_CAPS = {
@@ -45,7 +45,7 @@ def generate_lcf_creep(input_path, capacities, theme, progress_cb=None):
         if progress_cb: progress_cb(msg)
 
     p("📖 Reading file…")
-    df, col_map, errors, warns = core.load_and_filter(input_path, ALLOWED_TYPES)
+    df, col_map, errors, warns = core.load_and_filter(input_path, LCF_ALLOWED_TYPES)
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -118,7 +118,7 @@ from openpyxl.utils import get_column_letter
 
 # ── Tool-specific config ──────────────────────────────────
 TOOL_TITLE    = "Coating Labs Dashboard (Cold Spray, HVOF, Plasma)"
-ALLOWED_TYPES = ["Cold Spray", "HVOF", "Plasma"]
+COATING_ALLOWED_TYPES = ["Cold Spray", "HVOF", "Plasma"]   # unique name
 OUTPUT_FILE   = "Coating_Labs_Dashboard.xlsx"
 COMBINED_CAP  = 350   # total samples/year across all 3 coating labs
 
@@ -329,7 +329,7 @@ def generate_coating(input_path, individual_caps, theme, progress_cb=None):
         if progress_cb: progress_cb(msg)
 
     p("📖 Reading file…")
-    df, col_map, errors, warns = core.load_and_filter(input_path, ALLOWED_TYPES)
+    df, col_map, errors, warns = core.load_and_filter(input_path, COATING_ALLOWED_TYPES)
     if errors:
         raise ValueError("\n".join(errors))
 

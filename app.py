@@ -340,7 +340,10 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
     return fig
-    """Monthly utilization line chart."""
+
+
+def chart_utilization_line(util_df, types, years, colors):
+    """Monthly utilization line chart with 100%/80% reference lines."""
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
     line_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6"]
@@ -363,7 +366,6 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
                 hovertemplate=f"<b>{t} ({year})</b><br>%{{x}}: %{{y:.1%}}<extra></extra>",
             ))
 
-    # 100% reference line
     fig.add_hline(y=1.0, line_dash="dot", line_color="#FF4444",
                   annotation_text="100% Capacity", annotation_position="right")
     fig.add_hline(y=0.8, line_dash="dot", line_color="#FFD700",
@@ -377,60 +379,6 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
         font=dict(family="Arial", size=12),
         legend=dict(orientation="h", yanchor="bottom", y=-0.4),
         margin=dict(b=120),
-    )
-    fig.update_xaxes(showgrid=False)
-    fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
-    return fig
-
-
-def chart_capacity_bar(weekly_df, types, capacities, years):
-    """Capacity vs Avg Weekly Demand bar chart — no text overlap."""
-    fig = go.Figure()
-    cap_weekly = {t: capacities.get(t, 1) / 52 for t in types}
-
-    # Capacity bars — use "inside" to avoid crowding at top
-    fig.add_trace(go.Bar(
-        name="Weekly Capacity",
-        x=types,
-        y=[round(cap_weekly[t], 2) for t in types],
-        marker_color="#D9E1F2",
-        marker_line_color="#1F3864", marker_line_width=1.5,
-        text=[f"Cap: {cap_weekly[t]:.2f}" for t in types],
-        textposition="inside",
-        insidetextanchor="start",
-        textfont=dict(size=9, color="#1F3864"),
-    ))
-
-    bar_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6","#C6EFCE"]
-    for yi, year in enumerate(years):
-        yd   = weekly_df[weekly_df["Year"] == year]
-        avgs = [round(yd[t].mean(), 3) for t in types]
-        fig.add_trace(go.Bar(
-            name=f"{year} Avg Demand",
-            x=types, y=avgs,
-            marker_color=bar_colors[yi % len(bar_colors)],
-            text=[f"{v:.2f}" for v in avgs],
-            textposition="outside",
-            textfont=dict(size=9),
-        ))
-
-    # Calculate a clean yaxis max with headroom so outside labels don't clip
-    all_vals = [cap_weekly[t] for t in types]
-    for y in years:
-        yd = weekly_df[weekly_df["Year"] == y]
-        all_vals += [yd[t].mean() for t in types]
-    y_max = max((v for v in all_vals if not math.isnan(v)), default=1) * 1.25
-
-    fig.update_layout(
-        barmode="group",
-        title="Average Weekly Demand vs Capacity",
-        xaxis_title="Lab Type", yaxis_title="Weekly Units",
-        yaxis=dict(range=[0, y_max]),
-        height=460, plot_bgcolor="white", paper_bgcolor="white",
-        font=dict(family="Arial", size=11),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
-        margin=dict(b=100, t=60, r=20),
-        uniformtext=dict(minsize=8, mode="hide"),   # hide labels that cannot fit
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
