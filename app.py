@@ -203,78 +203,143 @@ def generate_excel(tool_fn, *args, **kwargs):
 # ──────────────────────────────────────────────────────────
 
 def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
-    """YoY grouped bar chart + pie charts per year."""
-    # --- Bar chart ---
+    """YoY grouped bar chart + list of individual pie figures (one per year)."""
+    # ── Bar chart ─────────────────────────────────────────
     fig_bar = go.Figure()
     bar_colors = ["#1F3864","#2E75B6","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
 
     for i, t in enumerate(types):
-        y_vals = [annual_totals[int(y)][t] for y in years]
+        y_vals = [annual_totals[int(y)].get(t, 0) for y in years]
         fig_bar.add_trace(go.Bar(
             name=t,
-            x=[str(y) for y in years],
+            x=[str(y) for y in years],      # force strings
             y=y_vals,
             marker_color=bar_colors[i % len(bar_colors)],
             text=[f"{v:.0f}" for v in y_vals],
             textposition="outside",
         ))
 
+    n_types = len(types)
+    bar_w   = max(0.15, min(0.5, 0.6 / max(n_types, 1)))   # narrower bars when few types
     fig_bar.update_layout(
         barmode="group",
         title="Year-on-Year Demand by Lab Type",
-        xaxis_title="Year", yaxis_title="Samples/Year",
+        xaxis=dict(
+            type="category",          # ← forces discrete / no decimals
+            title="Year",
+            tickmode="array",
+            tickvals=[str(y) for y in years],
+            ticktext=[str(y) for y in years],
+        ),
+        yaxis_title="Samples/Year",
         legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
         height=460, plot_bgcolor="white", paper_bgcolor="white",
         font=dict(family="Arial", size=11),
         margin=dict(t=50, b=110, r=20),
         uniformtext=dict(minsize=8, mode="hide"),
+        bargroupgap=0.12,
     )
+    fig_bar.update_traces(width=bar_w)
     fig_bar.update_xaxes(showgrid=False)
     fig_bar.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
 
-    # --- Pie charts: one per year ---
-    n_years = len(years)
-    cols_per_row = min(n_years, 3)
-    rows = math.ceil(n_years / cols_per_row)
-
-    fig_pies = make_subplots(
-        rows=rows, cols=cols_per_row,
-        specs=[[{"type":"pie"}]*cols_per_row]*rows,
-        subplot_titles=[str(y) for y in years],
-    )
+    # ── Individual pie per year (each with its own legend below) ──
     pie_colors = ["#1F3864","#2E75B6","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
-
-    for i, year in enumerate(years):
-        row = i // cols_per_row + 1
-        col = i %  cols_per_row + 1
-        vals   = [annual_totals[int(year)][t] for t in types]
+    pie_figs = []
+    for year in years:
+        vals   = [annual_totals[int(year)].get(t, 0) for t in types]
         total  = sum(vals)
-        labels = [f"{t}<br>{v:.0f} ({v/total:.0%})" if total > 0 else t
-                  for t, v in zip(types, vals)]
-        fig_pies.add_trace(
-            go.Pie(
-                labels=types, values=vals,
-                name=str(year),
-                marker=dict(colors=pie_colors[:len(types)]),
-                textinfo="label+percent",
-                hovertemplate="<b>%{label}</b><br>%{value:.0f} samples<br>%{percent}<extra></extra>",
+        fig_p  = go.Figure()
+        fig_p.add_trace(go.Pie(
+            labels=types,
+            values=vals,
+            name=str(year),
+            marker=dict(colors=pie_colors[:len(types)]),
+            textinfo="label+percent",
+            hovertemplate="<b>%{label}</b><br>%{value:.0f} samples<br>%{percent}<extra></extra>",
+            hole=0.0,
+        ))
+        fig_p.update_layout(
+            title=dict(text=str(year), x=0.5, xanchor="center",
+                       font=dict(size=13, color="#555")),
+            height=280,
+            showlegend=True,
+            legend=dict(
+                orientation="h",
+                yanchor="top", y=-0.05,   # sits just below the pie
+                xanchor="center", x=0.5,
+                font=dict(size=11),
             ),
-            row=row, col=col,
+            margin=dict(t=40, b=60, l=10, r=10),
+            font=dict(family="Arial", size=11),
+            paper_bgcolor="white",
         )
+        pie_figs.append(fig_p)
 
-    fig_pies.update_layout(
-        title="Process-wise Demand Share (%) by Year",
-        height=320 * rows,
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=-0.15),
-        font=dict(family="Arial", size=12),
-        paper_bgcolor="white",
+    return fig_bar, pie_figs
+
+
+def chart_capacity_bar(weekly_df, types, capacities, years):
+    """Capacity vs Avg Weekly Demand — demand bars + capacity reference line/marker."""
+    fig = go.Figure()
+    cap_weekly = {t: capacities.get(t, 1) / 52 for t in types}
+
+    bar_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6","#C6EFCE"]
+
+    # ── Demand bars per year ──────────────────────────────
+    demand_vals = []
+    for yi, year in enumerate(years):
+        yd   = weekly_df[weekly_df["Year"] == year]
+        avgs = [round(float(yd[t].mean()), 3) if t in yd.columns else 0 for t in types]
+        demand_vals.extend(v for v in avgs if not math.isnan(v))
+        fig.add_trace(go.Bar(
+            name=f"{year} Avg Demand",
+            x=types, y=avgs,
+            marker_color=bar_colors[yi % len(bar_colors)],
+            text=[f"{v:.2f}" for v in avgs],
+            textposition="outside",
+            textfont=dict(size=9),
+        ))
+
+    # ── Capacity: scatter markers (▬) at cap level per type ──
+    cap_vals = [round(cap_weekly[t], 2) for t in types]
+    fig.add_trace(go.Scatter(
+        name="Weekly Capacity",
+        x=types,
+        y=cap_vals,
+        mode="markers+text",
+        marker=dict(
+            symbol="line-ew",
+            size=36,
+            color="#C00000",
+            line=dict(width=3, color="#C00000"),
+        ),
+        text=[f"Cap: {v:.2f}" for v in cap_vals],
+        textposition="top center",
+        textfont=dict(size=9, color="#C00000"),
+    ))
+
+    # Y range: headroom above the larger of capacity or peak demand
+    safe_demand = [v for v in demand_vals if not math.isnan(v)]
+    y_top = max(
+        max(safe_demand, default=0),
+        max(cap_vals, default=0)
+    ) * 1.35
+
+    fig.update_layout(
+        barmode="group",
+        title="Average Weekly Demand vs Capacity",
+        xaxis=dict(type="category", title="Lab Type"),
+        yaxis=dict(title="Weekly Units", range=[0, y_top]),
+        height=460, plot_bgcolor="white", paper_bgcolor="white",
+        font=dict(family="Arial", size=11),
+        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+        margin=dict(b=100, t=60, r=20),
+        uniformtext=dict(minsize=8, mode="hide"),
     )
-
-    return fig_bar, fig_pies
-
-
-def chart_utilization_line(util_df, types, years, colors):
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
+    return fig
     """Monthly utilization line chart."""
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -1079,10 +1144,14 @@ if "Tool 1" in tool:
                 st.plotly_chart(fig_util, use_container_width=True)
 
             with tabs[1]:
-                fig_bar, fig_pies = chart_yoy_bar_and_pie(annual_1, types_1, years_1,
+                fig_bar, pie_figs = chart_yoy_bar_and_pie(annual_1, types_1, years_1,
                                                            THEME_COLORS[theme_name])
                 st.plotly_chart(fig_bar, use_container_width=True)
-                st.plotly_chart(fig_pies, use_container_width=True)
+                st.markdown("**Process-wise Demand Share (%) by Year**")
+                pie_cols = st.columns(len(years_1))
+                for pc, pf in zip(pie_cols, pie_figs):
+                    with pc:
+                        st.plotly_chart(pf, use_container_width=True)
 
             with tabs[2]:
                 fig_cap = chart_capacity_bar(wdf_1, types_1, caps_1, years_1)
@@ -1236,10 +1305,14 @@ elif "Tool 2" in tool:
                 st.plotly_chart(fig_u2, use_container_width=True)
 
             with tabs2[1]:
-                fig_bar2, fig_pies2 = chart_yoy_bar_and_pie(annual_2, types_2, years_2,
+                fig_bar2, pie_figs2 = chart_yoy_bar_and_pie(annual_2, types_2, years_2,
                                                               THEME_COLORS[theme_name_2])
                 st.plotly_chart(fig_bar2, use_container_width=True)
-                st.plotly_chart(fig_pies2, use_container_width=True)
+                st.markdown("**Process-wise Demand Share (%) by Year**")
+                pie_cols2 = st.columns(len(years_2))
+                for pc, pf in zip(pie_cols2, pie_figs2):
+                    with pc:
+                        st.plotly_chart(pf, use_container_width=True)
 
             with tabs2[2]:
                 fig_cap2 = chart_capacity_bar(wdf_2, types_2, ind_caps_2, years_2)
@@ -1353,10 +1426,14 @@ elif "Tool 3" in tool:
                 st.plotly_chart(fig_ut3, use_container_width=True)
 
             with tabs_t3[1]:
-                fig_bar_t3, fig_pies_t3 = chart_yoy_bar_and_pie(
+                fig_bar_t3, pie_figs_t3 = chart_yoy_bar_and_pie(
                     annual_t3, types_t3, years_t3, THEME_COLORS[theme_name_t3])
                 st.plotly_chart(fig_bar_t3, use_container_width=True)
-                st.plotly_chart(fig_pies_t3, use_container_width=True)
+                st.markdown("**Process-wise Demand Share (%) by Year**")
+                pie_cols_t3 = st.columns(len(years_t3))
+                for pc, pf in zip(pie_cols_t3, pie_figs_t3):
+                    with pc:
+                        st.plotly_chart(pf, use_container_width=True)
 
             with tabs_t3[2]:
                 fig_cap_t3 = chart_capacity_bar(wdf_t3, types_t3, rig_caps_t3, years_t3)
@@ -1654,18 +1731,26 @@ elif "Tool 4" in tool:
 
             with tabs4[1]:
                 st.subheader("🔵 Mechanical Labs — Process Share")
-                _, fig_pie_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
-                                                        THEME_COLORS[theme_name_3])
-                st.plotly_chart(fig_pie_a3, use_container_width=True)
+                _, pie_figs_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
+                                                         THEME_COLORS[theme_name_3])
+                pie_ca3 = st.columns(len(years_a3))
+                for pc, pf in zip(pie_ca3, pie_figs_a3):
+                    with pc: st.plotly_chart(pf, use_container_width=True)
+
                 st.subheader("🟢 Coating Labs — Process Share")
-                _, fig_pie_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
-                                                        THEME_COLORS[theme_name_3])
-                st.plotly_chart(fig_pie_b3, use_container_width=True)
+                _, pie_figs_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
+                                                         THEME_COLORS[theme_name_3])
+                pie_cb3 = st.columns(len(years_b3))
+                for pc, pf in zip(pie_cb3, pie_figs_b3):
+                    with pc: st.plotly_chart(pf, use_container_width=True)
+
                 if has_c3:
                     st.subheader("🟠 Thermal Lab — Process Share")
-                    _, fig_pie_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
-                                                            THEME_COLORS[theme_name_3])
-                    st.plotly_chart(fig_pie_c3, use_container_width=True)
+                    _, pie_figs_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
+                                                             THEME_COLORS[theme_name_3])
+                    pie_cc3 = st.columns(len(years_c3))
+                    for pc, pf in zip(pie_cc3, pie_figs_c3):
+                        with pc: st.plotly_chart(pf, use_container_width=True)
 
             with tabs4[2]:
                 st.plotly_chart(fig_util3, use_container_width=True)
