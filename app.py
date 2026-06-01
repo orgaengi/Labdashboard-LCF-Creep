@@ -545,22 +545,27 @@ def chart_util_comparison_line(wdf_a, wdf_b, types_a, types_b, years,
 # ──────────────────────────────────────────────────────────
 
 def show_kpi_row(types, annual_totals, capacities, years):
-    """Show KPI metric cards for most recent year."""
+    """Show KPI metric cards for most recent year, including vacant capacity."""
     last_year = max(years)
     cols = st.columns(len(types))
     for ci, t in enumerate(types):
-        cap  = capacities.get(t, 1)
-        dem  = annual_totals[int(last_year)].get(t, 0)
-        util = dem / cap if cap > 0 else 0
+        cap    = capacities.get(t, 1)
+        dem    = annual_totals[int(last_year)].get(t, 0)
+        util   = dem / cap if cap > 0 else 0
+        vacant = max(0, cap - dem)
         with cols[ci]:
-            cls = "red" if util > 1 else "amber" if util >= 0.8 else "green"
+            cls  = "red" if util > 1 else "amber" if util >= 0.8 else "green"
             icon = "🔴" if util > 1 else "🟡" if util >= 0.8 else "🟢"
+            vacant_color = "#888" if vacant > 0 else "#FF4444"
             st.markdown(f"""
             <div class="metric-card {cls}">
                 <div style="font-size:11px;color:#666;font-weight:600;">{t}</div>
                 <div style="font-size:22px;font-weight:800;color:#1F3864;">{dem:.0f}</div>
                 <div style="font-size:12px;color:#555;">samples in {last_year}</div>
                 <div style="font-size:13px;margin-top:4px;">{icon} {util:.0%} of {cap}/yr</div>
+                <div style="font-size:12px;color:{vacant_color};margin-top:2px;">
+                    🕳️ Vacant: <b>{vacant:.0f}</b> slots/yr ({vacant/52:.1f}/wk)
+                </div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -761,18 +766,14 @@ with st.sidebar:
          "🔴 Tool 4 — Comparison & PPT"],
         label_visibility="collapsed",
     )
-    st.markdown("---")
-    st.markdown("**Input Format**")
-    st.markdown("Excel file with columns:\n- `Year`\n- `Type` (lab name)\n- `Value` (samples)")
-    st.markdown("---")
-    st.markdown("**Output**\n\nExcel dashboard with 7–8 sheets including charts, Gantt, and pie charts.")
-    st.markdown("---")
-    st.caption(f"Current week: **{CURRENT_WEEK}** of {CURRENT_YEAR}")
+    st.caption(f"Week **{CURRENT_WEEK}** / {CURRENT_YEAR}")
+    with st.expander("ℹ️ Input format & output"):
+        st.markdown("**Input:** Excel with `Year | Type | Value`")
+        st.markdown("**Output:** Excel dashboard (7–8 sheets) + optional PowerPoint")
     st.markdown("---")
 
     # ── Rule-Based Data Assistant ──────────────────────────
-    st.markdown("---")
-    st.markdown("## 💬 Data Assistant")
+    st.markdown("### 💬 Data Assistant")
     st.caption("Ask questions about your uploaded lab data.")
 
     # ── answer engine ──────────────────────────────────────
@@ -958,7 +959,7 @@ with st.sidebar:
             "  • *'Capacity needed for 80% in Cold Spray'*\n"
             "  • *'Show me a summary'*\n"
             "  • *'Highest demand for Plasma'*\n"
-            "  • *'Trend for Thermal Rig 1'*\n"
+            "  • *'Trend for Thermal Rig'*\n"
             "  • *'List all labs'*"
         )
 
@@ -1198,11 +1199,14 @@ elif "Tool 2" in tool:
                 combined_demand = sum(annual_2[last_y2].get(t, 0) for t in types_2)
                 total_cap = sum(ind_caps_2.values())
                 comb_util = combined_demand / total_cap if total_cap > 0 else 0
+                comb_vacant = max(0, total_cap - combined_demand)
                 cls = "red" if comb_util > 1 else "amber" if comb_util >= 0.8 else "green"
+                vcol = "#888" if comb_vacant > 0 else "#FF4444"
                 st.markdown(f"""<div class="metric-card {cls}">
                     <div style="font-size:11px;color:#666;font-weight:600;">Total Demand ({last_y2})</div>
                     <div style="font-size:28px;font-weight:800;color:#1F5C1A;">{combined_demand:.0f}</div>
-                    <div style="font-size:13px;">across all 3 labs (sum cap: {total_cap})</div>
+                    <div style="font-size:13px;">across all 3 labs (cap: {total_cap})</div>
+                    <div style="font-size:12px;color:{vcol};margin-top:2px;">🕳️ Vacant: <b>{comb_vacant:.0f}</b>/yr ({comb_vacant/52:.1f}/wk)</div>
                 </div>""", unsafe_allow_html=True)
             with col_kpi2:
                 st.markdown(f"""<div class="metric-card">
@@ -1298,28 +1302,14 @@ elif "Tool 3" in tool:
                                     label_visibility="collapsed")
 
     # ── Capacity config ───────────────────────────────────
-    st.markdown('<div class="section-label">⚙️ Rig Capacities (samples/year)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-label">⚙️ Rig Capacity (samples/year)</div>', unsafe_allow_html=True)
 
-    tc1, tc2, tc3 = st.columns(3)
-    with tc1:
-        r1_cap = st.number_input("🔶 Thermal Rig 1", value=200, min_value=1, max_value=9999,
-                                  key="t3_r1")
-        st.caption(f"→ {r1_cap/52:.1f}/wk")
-    with tc2:
-        r2_cap = st.number_input("🔶 Thermal Rig 2", value=200, min_value=1, max_value=9999,
-                                  key="t3_r2")
-        st.caption(f"→ {r2_cap/52:.1f}/wk")
-    with tc3:
-        r3_cap = st.number_input("🔶 Thermal Rig 3", value=200, min_value=1, max_value=9999,
-                                  key="t3_r3")
-        st.caption(f"→ {r3_cap/52:.1f}/wk")
+    r1_cap = st.number_input("🔶 Thermal Rig capacity", value=200, min_value=1, max_value=9999,
+                              key="t3_r1")
+    st.caption(f"→ {r1_cap/52:.1f} samples/wk  |  Vacant if below capacity")
 
-    rig_caps_t3 = {
-        "Thermal Rig 1": r1_cap,
-        "Thermal Rig 2": r2_cap,
-        "Thermal Rig 3": r3_cap,
-    }
-    thermal_types = list(rig_caps_t3.keys())
+    rig_caps_t3 = {"Thermal Rig": r1_cap}
+    thermal_types = ["Thermal Rig"]
 
     theme_name_t3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t3_theme")
     theme_t3 = core.COLOR_THEMES[theme_name_t3]
@@ -1416,8 +1406,8 @@ elif "Tool 3" in tool:
                 )
                 st.success("✅ Dashboard ready! Click the button above to download.")
     else:
-        st.info("👆 Upload an Excel file. Columns: Year | Type (Thermal Rig 1/2/3) | Value  "
-                "— or wide format: Year | Week | Thermal Rig 1 | Thermal Rig 2 | Thermal Rig 3")
+        st.info("👆 Upload an Excel file. Columns: Year | Type (Thermal Rig) | Value  "
+                "— or wide format: Year | Week | Thermal Rig")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1469,12 +1459,9 @@ elif "Tool 4" in tool:
 
     with cc3:
         st.markdown('<div class="section-label">🟠 Thermal Capacities</div>', unsafe_allow_html=True)
-        tc1_col, tc2_col, tc3_col = st.columns(3)
-        with tc1_col: tr1 = st.number_input("Rig 1", value=200, min_value=1, key="t4_r1")
-        with tc2_col: tr2 = st.number_input("Rig 2", value=200, min_value=1, key="t4_r2")
-        with tc3_col: tr3 = st.number_input("Rig 3", value=200, min_value=1, key="t4_r3")
-        caps_c3 = {"Thermal Rig 1": tr1, "Thermal Rig 2": tr2, "Thermal Rig 3": tr3}
-        st.caption(f"Rig1 {tr1/52:.1f} | Rig2 {tr2/52:.1f} | Rig3 {tr3/52:.1f}  /wk")
+        tr1 = st.number_input("Thermal Rig", value=200, min_value=1, key="t4_r1")
+        caps_c3 = {"Thermal Rig": tr1}
+        st.caption(f"→ {tr1/52:.1f}/wk")
 
     theme_name_3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t4_theme")
     theme_3 = core.COLOR_THEMES[theme_name_3]

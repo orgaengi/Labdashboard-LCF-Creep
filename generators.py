@@ -487,9 +487,9 @@ GROUP_A = {"name":"Mechanical Labs","types":["LCF","Creep"],
            "caps":{"LCF":50,"Creep":22},"color":"1A4E8A","cap_total":72}
 GROUP_B = {"name":"Coating Labs","types":["Cold Spray","HVOF","Plasma"],
            "caps":{"Cold Spray":140,"HVOF":120,"Plasma":90},"color":"1F5C1A","cap_total":350}
-GROUP_C = {"name":"Thermal Lab","types":["Thermal Rig 1","Thermal Rig 2","Thermal Rig 3"],
-           "caps":{"Thermal Rig 1":200,"Thermal Rig 2":200,"Thermal Rig 3":200},
-           "color":"7F3F00","cap_total":600}
+GROUP_C = {"name":"Thermal Lab","types":["Thermal Rig"],
+           "caps":{"Thermal Rig":200},
+           "color":"7F3F00","cap_total":200}
 ALL_TYPES = GROUP_A["types"] + GROUP_B["types"] + GROUP_C["types"]
 
 
