@@ -207,37 +207,360 @@ def _wide_to_long(df, allowed_types):
     return pd.DataFrame(rows)
 
 
-def load_and_filter(path, allowed_types):
-    """Load Excel (wide OR long format), return (df, col_map, errors, warns)."""
+def _scan_header_row(df_raw):
+    """
+    Given a DataFrame read with header=None, find the row index that looks
+    most like a real header (contains known keyword aliases).
+    Returns (header_row_idx, df_with_correct_header).
+    """
+    all_aliases = set()
+    for aliases in COLUMN_ALIASES.values():
+        all_aliases.update(aliases)
+    all_aliases.update(["week", "wk"])
+
+    best_row, best_score = 0, 0
+    for i, row in df_raw.iterrows():
+        score = sum(
+            1 for cell in row
+            if isinstance(cell, str) and
+               any(a in cell.lower().strip() for a in all_aliases)
+        )
+        if score > best_score:
+            best_score, best_row = score, i
+
+    if best_score == 0:
+        # No keyword row found — assume row 0 is header
+        best_row = 0
+
+    # Rebuild df with that row as header
+    new_df = df_raw.iloc[best_row + 1:].copy()
+    new_df.columns = [str(c).strip() if not pd.isna(c) else f"_col{i}"
+                      for i, c in enumerate(df_raw.iloc[best_row])]
+    new_df = new_df.reset_index(drop=True)
+    return new_df
+
+
+def _try_all_sheets(path):
+    """
+    Try to read each sheet in the workbook. Return the first sheet whose
+    DataFrame (after header scan) contains recognisable column keywords.
+    Falls back to first sheet if none match.
+    """
+    all_aliases = set()
+    for aliases in COLUMN_ALIASES.values():
+        all_aliases.update(aliases)
+
     try:
-        # Try Weekly_Planner sheet first (reference model), fall back to first sheet
+        xl = pd.ExcelFile(path)
+    except Exception:
+        return None, "Cannot open file"
+
+    sheet_names = xl.sheet_names
+
+    # Priority: if "Weekly_Planner" exists, try it first
+    if "Weekly_Planner" in sheet_names:
+        sheet_names = ["Weekly_Planner"] + [s for s in sheet_names if s != "Weekly_Planner"]
+
+    best_df, best_score = None, -1
+    for sheet in sheet_names:
         try:
-            df = pd.read_excel(path, sheet_name="Weekly_Planner")
+            raw = pd.read_excel(xl, sheet_name=sheet, header=None)
         except Exception:
-            df = pd.read_excel(path)
-    except Exception as e:
-        return None, {}, [f"Cannot open file: {e}"], []
+            continue
+        if raw.empty or len(raw) < 2:
+            continue
+        # Score: how many cells in first 10 rows match known aliases
+        score = 0
+        for _, row in raw.head(10).iterrows():
+            for cell in row:
+                if isinstance(cell, str):
+                    if any(a in cell.lower().strip() for a in all_aliases):
+                        score += 1
+        if score > best_score:
+            best_score, best_df = score, raw
+
+    if best_df is None:
+        return None, "No readable sheet found"
+    return best_df, None
+
+
+def _fuzzy_match_type(cell_value, allowed_types):
+    """
+    Return the canonical allowed_type that best matches cell_value, or None.
+    Strategy (in order):
+      1. Exact match (case-insensitive, stripped)
+      2. All words of cell_value appear in allowed_type (or vice versa)
+      3. Any word of cell_value ≥4 chars appears in allowed_type
+    """
+    if not isinstance(cell_value, str):
+        return None
+    v = cell_value.lower().strip()
+    for t in allowed_types:
+        if v == t.lower():
+            return t
+    for t in allowed_types:
+        tl = t.lower()
+        v_words = set(v.split())
+        t_words = set(tl.split())
+        if v_words and v_words <= t_words:          # all cell words in type
+            return t
+        if t_words and t_words <= v_words:          # all type words in cell
+            return t
+    for t in allowed_types:
+        tl = t.lower()
+        for word in v.split():
+            if len(word) >= 4 and word in tl:
+                return t
+    return None
+
+
+def _is_monthly_block_format(path):
+    """
+    Detect the GE Vernova monthly-block format:
+      - Sheet names are years (e.g. '2024', '2025')
+      - No column headers; repeating 5-row monthly blocks:
+          [date_row]
+          TOTAL RIGS RUNNING   | value
+          TOTAL SLOTS AVAILABLE| value
+          TOTAL SAMPLES REMOVED| value
+          [blank row]
+    Returns (True/False, ExcelFile object, list_of_year_sheets).
+    """
+    import re as _re
+    try:
+        xl = pd.ExcelFile(path)
+    except Exception:
+        return False, None, []
+
+    YEAR_RE = _re.compile(r'^(20\d{2})$')
+    year_sheets = [s for s in xl.sheet_names if YEAR_RE.match(str(s).strip())]
+    if not year_sheets:
+        return False, xl, []
+
+    # Verify at least one sheet has the SAMPLES REMOVED keyword
+    for sheet in year_sheets[:2]:
+        try:
+            raw = pd.read_excel(xl, sheet_name=sheet, header=None)
+            col0 = raw.iloc[:, 0].astype(str).str.upper()
+            if col0.str.contains("SAMPLES REMOVED", na=False).any():
+                return True, xl, year_sheets
+        except Exception:
+            continue
+    return False, xl, []
+
+
+def _parse_monthly_blocks(xl, year_sheets, allowed_types):
+    """
+    Parse the GE Vernova monthly-block format.
+
+    Each sheet = one year.
+    Each ~5-row block contains one month of data:
+        row 0: date (Timestamp) — month extracted from .month attribute
+        row 1: TOTAL RIGS RUNNING       | numeric value
+        row 2: TOTAL SLOTS AVAILABLE    | numeric value
+        row 3: TOTAL SAMPLES REMOVED    | numeric value
+        row 4: blank
+
+    Returns (annual_df, warns) where annual_df has columns:
+        Year | Type | Value   (long format; Value = annual sum of SAMPLES REMOVED)
+    Also embeds SLOTS_AVAILABLE so the caller can offer auto-capacity detection.
+    """
+    warns = []
+    monthly_rows = []   # one row per month per year
+
+    for sheet in year_sheets:
+        try:
+            year = int(str(sheet).strip())
+        except ValueError:
+            warns.append(f"Sheet '{sheet}' skipped — name is not a valid year.")
+            continue
+
+        try:
+            raw = pd.read_excel(xl, sheet_name=sheet, header=None)
+        except Exception as e:
+            warns.append(f"Could not read sheet '{sheet}': {e}")
+            continue
+
+        i = 0
+        while i < len(raw):
+            row = raw.iloc[i]
+            cell0 = row.iloc[0]
+
+            # Detect block start = a date/timestamp cell
+            month_num = None
+            if hasattr(cell0, 'month'):          # pandas Timestamp
+                month_num = cell0.month
+            elif isinstance(cell0, str) and cell0.strip():
+                dt = pd.to_datetime(cell0, errors='coerce')
+                if not pd.isna(dt):
+                    month_num = dt.month
+
+            if month_num is not None:
+                # Read next up to 4 rows for this block
+                block = {'Year': year, 'Month': month_num,
+                         'Rigs': None, 'Slots': None, 'Removed': None}
+                j = i + 1
+                while j < len(raw) and j <= i + 4:
+                    r2   = raw.iloc[j]
+                    lbl  = str(r2.iloc[0]).upper().strip() if not pd.isna(r2.iloc[0]) else ""
+                    val  = r2.iloc[1] if len(r2) > 1 else None
+                    try:
+                        val = float(val) if val is not None and not pd.isna(val) else None
+                    except (ValueError, TypeError):
+                        val = None
+
+                    if 'SAMPLES REMOVED' in lbl and val is not None:
+                        block['Removed'] = val
+                    elif 'SLOTS AVAILABLE' in lbl and val is not None:
+                        block['Slots'] = val
+                    elif 'RIGS RUNNING' in lbl and val is not None:
+                        block['Rigs'] = val
+                    j += 1
+
+                if block['Removed'] is not None:
+                    monthly_rows.append(block)
+                i = j
+            else:
+                i += 1
+
+    if not monthly_rows:
+        return pd.DataFrame(), ["No monthly data blocks found in the file."]
+
+    detail = pd.DataFrame(monthly_rows)
+
+    # ── Assign type name ──────────────────────────────────
+    # If exactly one allowed_type, all data belongs to it.
+    # If multiple, try to find a type label anywhere in the file (future).
+    if len(allowed_types) == 1:
+        type_name = allowed_types[0]
+    else:
+        # Try fuzzy matching against the file name or sheet names
+        # Default: use the first allowed type and warn
+        type_name = allowed_types[0]
+        warns.append(
+            f"Multiple lab types expected {allowed_types}. "
+            f"All monthly-block data assigned to '{type_name}'. "
+            "Upload one file per lab type for best results."
+        )
+
+    # ── Aggregate to annual totals ────────────────────────
+    annual = (detail.groupby('Year')['Removed']
+              .sum()
+              .reset_index()
+              .rename(columns={'Removed': 'Value'}))
+    annual['Type']  = type_name
+    annual['Year']  = annual['Year'].astype(int)
+    annual['Value'] = annual['Value'].fillna(0)
+
+    # Attach slot totals as metadata (for auto-capacity suggestion)
+    slot_totals = detail.groupby('Year')['Slots'].sum().to_dict()
+
+    partial_years = []
+    for yr, grp in detail.groupby('Year'):
+        if len(grp) < 12:
+            partial_years.append(f"{yr} ({len(grp)} months)")
+    if partial_years:
+        warns.append(
+            f"Partial year(s) detected: {', '.join(partial_years)}. "
+            "Totals reflect only the months present in the file."
+        )
+
+    return annual[['Year', 'Type', 'Value']], warns
+
+
+def load_and_filter(path, allowed_types):
+    """
+    Load Excel (any format, any sheet, any header row), return
+    (df, col_map, errors, warns).
+
+    Handles:
+    - GE Vernova monthly-block format (year-named sheets, keyword/value pairs)
+    - Junk / title rows above the real header
+    - Data on any sheet (scans all, picks best)
+    - Wide format (Year | LabType1 | LabType2 ...) and long format
+    - Partial / fuzzy type name matching
+    - Mixed-case type names and extra whitespace
+    - Blank rows, subtotal rows, non-numeric values
+    - Year values like 'FY2024', '2024-25', dates
+    - Extra/junk columns (Notes, Remarks, etc.)
+    """
+    # ── 0. GE Vernova monthly-block format (highest priority) ─
+    is_block, xl_obj, year_sheets = _is_monthly_block_format(path)
+    if is_block:
+        annual_df, block_warns = _parse_monthly_blocks(xl_obj, year_sheets, allowed_types)
+        if annual_df is not None and not annual_df.empty:
+            col_map = {'year': 'Year', 'type': 'Type', 'value': 'Value'}
+            return annual_df, col_map, [], block_warns
+        # If parse failed, fall through to general parser with warnings
+        block_warns.insert(0, "Monthly-block format detected but parsing returned no data — trying general parser.")
+    else:
+        block_warns = []
+
+    # ── 1. Find the best sheet ────────────────────────────
+    raw_df, sheet_err = _try_all_sheets(path)
+    if raw_df is None:
+        return None, {}, [f"Cannot open file: {sheet_err}"], block_warns
+
+    # ── 2. Find the real header row within the sheet ──────
+    df = _scan_header_row(raw_df)
 
     if df.empty:
-        return None, {}, ["File is empty."], []
+        return None, {}, ["File is empty or has no data rows."], []
 
-    # Detect and handle wide format
+    # ── 3. Detect wide vs long, convert if needed ─────────
     if _is_wide_format(df, allowed_types):
         df = _wide_to_long(df, allowed_types)
+    else:
+        # Wide format with fuzzy column names?
+        # Check if any column fuzzy-matches a lab type
+        fuzzy_wide_cols = []
+        cols_lower = {c.lower().strip(): c for c in df.columns}
+        for cl, co in cols_lower.items():
+            matched = _fuzzy_match_type(cl, allowed_types)
+            if matched:
+                fuzzy_wide_cols.append((co, matched))
+        if fuzzy_wide_cols:
+            # Rename those columns to canonical names and treat as wide
+            rename_map = {orig: canon for orig, canon in fuzzy_wide_cols}
+            df = df.rename(columns=rename_map)
+            df = _wide_to_long(df, allowed_types)
 
+    # ── 4. Detect standard columns ────────────────────────
     col_map = detect_columns(df)
+
+    # If Type column found, apply fuzzy matching on its values
+    if "type" in col_map:
+        tc = col_map["type"]
+        df[tc] = df[tc].astype(str).str.strip()
+        def _map_type(v):
+            if not isinstance(v, str) or not v.strip():
+                return v
+            exact_lower = {t.lower(): t for t in allowed_types}
+            vl = v.lower().strip()
+            if vl in exact_lower:
+                return exact_lower[vl]
+            return _fuzzy_match_type(v, allowed_types) or v
+        df[tc] = df[tc].apply(_map_type)
+
+    # ── 5. Validate ───────────────────────────────────────
     errors, warns = validate_data(df, col_map, allowed_types)
     if errors:
         return df, col_map, errors, warns
 
+    # ── 6. Final filter to allowed types ─────────────────
     tc = col_map["type"]
     df[tc] = df[tc].astype(str).str.strip()
-    # Case-insensitive filter
     allowed_lower = {t.lower(): t for t in allowed_types}
     df["_type_lower"] = df[tc].str.lower()
     df = df[df["_type_lower"].isin(allowed_lower)]
     df[tc] = df["_type_lower"].map(allowed_lower)
     df = df.drop(columns=["_type_lower"])
+
+    if df.empty:
+        return df, col_map, [
+            f"No rows matched the expected lab types: {allowed_types}. "
+            f"Types found in file: {list(df[tc].unique()) if tc in df.columns else 'none'}"
+        ], warns
 
     return df, col_map, [], warns
 
