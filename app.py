@@ -262,6 +262,39 @@ def _bytes_to_tmp(b: bytes) -> str:
     tmp.close()
     return tmp.name
 
+
+def _detect_and_maybe_select_type(path, allowed_types, tool_key):
+    """
+    If the file is a monthly-block format (year-named sheets, TOTAL SAMPLES REMOVED)
+    but has multiple allowed_types, show a selectbox so the user can tell us
+    which lab type this file represents.
+
+    Returns the allowed_types list to pass into load_and_filter — either the
+    original list (if format is not monthly-block, or if only one type) or a
+    single-element list chosen by the user.
+    """
+    import lab_core as _core
+    try:
+        is_block, _, _ = _core._is_monthly_block_format(path)
+    except Exception:
+        is_block = False
+
+    if not is_block or len(allowed_types) == 1:
+        return allowed_types   # no disambiguation needed
+
+    # Multiple types + monthly-block format → ask user
+    key = f"_type_sel_{tool_key}"
+    st.info(
+        "📋 This file uses the **monthly-block format** (year-named sheets with "
+        "TOTAL SAMPLES REMOVED rows). Please select which lab type this file contains:"
+    )
+    chosen = st.selectbox(
+        "Which lab type does this file represent?",
+        options=allowed_types,
+        key=key,
+    )
+    return [chosen]
+
 def get_annual_totals(weekly_df, types, years):
     """Return dict {year: {type: annual_total}}."""
     result = {}
@@ -321,73 +354,61 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
     fig_bar.update_xaxes(showgrid=False)
     fig_bar.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
 
-    # ── Single combined pie figure — all years in one row ─
-    n_years = len(years)
-    n_cols  = min(n_years, 4)          # max 4 per row
-    n_rows  = math.ceil(n_years / n_cols)
+    # ── Single combined pie figure — smart multi-row layout ─
+    n_years  = len(years)
+    COLS_PER_ROW = min(n_years, 4)          # max 4 pies per row
+    n_rows   = math.ceil(n_years / COLS_PER_ROW)
 
-    specs = [[{"type": "pie"}] * n_cols for _ in range(n_rows)]
-    # pad last row with None if needed
-    last_row_count = n_years % n_cols
-    if last_row_count:
-        for c in range(last_row_count, n_cols):
-            specs[-1][c] = None
+    # Build specs grid (None for empty cells in last row)
+    specs = []
+    for r in range(n_rows):
+        row_specs = []
+        for c in range(COLS_PER_ROW):
+            idx = r * COLS_PER_ROW + c
+            row_specs.append({"type": "pie"} if idx < n_years else None)
+        specs.append(row_specs)
 
     fig_pies = make_subplots(
-        rows=n_rows, cols=n_cols,
+        rows=n_rows, cols=COLS_PER_ROW,
         specs=specs,
-        subplot_titles=[str(y) for y in years],
-        vertical_spacing=0.22,     # room for per-pie legend annotations
-        horizontal_spacing=0.06,
+        subplot_titles=[str(int(y)) for y in years],
+        vertical_spacing=0.18,
+        horizontal_spacing=0.05,
     )
 
     for i, year in enumerate(years):
-        r = i // n_cols + 1
-        c = i %  n_cols + 1
+        r = i // COLS_PER_ROW + 1
+        c = i %  COLS_PER_ROW + 1
         vals = [annual_totals[int(year)].get(t, 0) for t in types]
+        # Show legend entries only once (first pie) — all pies share same types/colors
         fig_pies.add_trace(
             go.Pie(
-                labels=types, values=vals, name=str(year),
-                marker=dict(colors=pie_colors[:len(types)]),
+                labels=list(types),
+                values=vals,
+                name=str(int(year)),
+                marker=dict(colors=pie_colors[:len(types)],
+                            line=dict(color="#FFFFFF", width=1.5)),
                 textinfo="label+percent",
-                hovertemplate="<b>%{label}</b><br>%{value:.0f} samples  %{percent}<extra></extra>",
-                showlegend=False,   # ← suppress global legend; we use annotations
+                textfont=dict(size=10),
+                hovertemplate="<b>%{label}</b><br>%{value:.0f} samples<br>%{percent}<extra></extra>",
+                showlegend=(i == 0),   # single shared legend from first pie only
             ),
             row=r, col=c,
         )
 
-    # Add per-pie legend as coloured-square annotations below each pie
-    for i, year in enumerate(years):
-        r = i // n_cols + 1
-        c = i %  n_cols + 1
-        # domain x-centre for this cell
-        x_step = 1.0 / n_cols
-        x_ctr  = (c - 1 + 0.5) * x_step
-        # domain y-bottom for this row  (row 1 is top in paper coords)
-        y_step = 1.0 / n_rows
-        row_bottom = 1.0 - r * y_step    # 0 = bottom, 1 = top
-        y_ann_start = row_bottom - 0.04  # just below the pie
-
-        for j, (t, col) in enumerate(zip(types, pie_colors)):
-            fig_pies.add_annotation(
-                x=x_ctr,
-                y=y_ann_start - j * 0.055,
-                text=f"<span style='color:{col};font-size:15px'>■</span>"
-                     f"<span style='color:#333;font-size:11px'> {t}</span>",
-                xref="paper", yref="paper",
-                showarrow=False,
-                align="center",
-            )
-
-    leg_height  = len(types) * 22 + 10     # px per type × n_types + padding
-    total_h     = n_rows * 280 + leg_height
     fig_pies.update_layout(
         title="Process-wise Demand Share (%) by Year",
-        height=total_h,
-        showlegend=False,
+        height=max(340, 320 * n_rows),
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            x=0.5, xanchor="center",
+            y=-0.06, yanchor="top",
+            font=dict(size=11, family="Arial"),
+        ),
         paper_bgcolor="white",
         font=dict(family="Arial", size=11),
-        margin=dict(t=50, b=leg_height + 20, l=10, r=10),
+        margin=dict(t=50, b=80, l=10, r=10),
     )
 
     return fig_bar, fig_pies
@@ -786,7 +807,7 @@ def show_annual_summary_table(annual_totals, types, years, capacities):
     st.dataframe(styled, use_container_width=True, hide_index=True)
 
 
-
+def make_editable_excel(weekly_df, util_df, annual_totals, types, capacities, years, title="Lab Data"):
     """Build an editable Excel workbook with 3 sheets and return bytes."""
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1243,7 +1264,8 @@ if "Tool 1" in tool:
     if fc1:
         paths_1 = [_bytes_to_tmp(fc1["bytes"])]
         try:
-            df_1, col_map_1, err_1, warn_1 = core.load_and_filter(paths_1[0], ["LCF","Creep"])
+            _types_1 = _detect_and_maybe_select_type(paths_1[0], ["LCF","Creep"], "t1")
+            df_1, col_map_1, err_1, warn_1 = core.load_and_filter(paths_1[0], _types_1)
         except Exception as _ex:
             import traceback as _tb
             st.error(f"❌ File processing failed: {_ex}")
@@ -1385,7 +1407,8 @@ elif "Tool 2" in tool:
         COATING_TYPES = ["Cold Spray", "HVOF", "Plasma"]
         paths_2 = [_bytes_to_tmp(fc2["bytes"])]
         try:
-            df_2, col_map_2, err_2, warn_2 = core.load_and_filter(paths_2[0], COATING_TYPES)
+            _types_2 = _detect_and_maybe_select_type(paths_2[0], COATING_TYPES, "t2")
+            df_2, col_map_2, err_2, warn_2 = core.load_and_filter(paths_2[0], _types_2)
         except Exception as _ex:
             import traceback as _tb
             st.error(f"❌ File processing failed: {_ex}")
