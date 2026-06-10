@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .env
+.DS_Store
 Lab_Dashboard_Output/
-.streamlit/secrets.toml
+*.zip

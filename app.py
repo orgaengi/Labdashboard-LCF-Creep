@@ -49,6 +49,29 @@ st.markdown("""
     section[data-testid="stSidebar"] .stRadio label { color: white !important; }
     section[data-testid="stSidebar"] p { color: #BDD7EE !important; font-size: 13px; }
 
+    /* ── Chat input: override the sidebar wildcard rule above ─────────────── */
+    section[data-testid="stSidebar"] .stTextInput input,
+    section[data-testid="stSidebar"] .stTextInput > div > div > input,
+    section[data-testid="stSidebar"] input[type="text"] {
+        background-color: #FFFFFF !important;
+        color: #1F3864 !important;
+        caret-color: #1F3864 !important;
+        border: 1.5px solid #6FA3D8 !important;
+        border-radius: 8px !important;
+        font-size: 13px !important;
+    }
+    section[data-testid="stSidebar"] .stTextInput input::placeholder,
+    section[data-testid="stSidebar"] input[type="text"]::placeholder {
+        color: #8AAAD4 !important;
+        opacity: 1 !important;
+    }
+    section[data-testid="stSidebar"] .stTextInput input:focus,
+    section[data-testid="stSidebar"] input[type="text"]:focus {
+        border-color: #5BA3E0 !important;
+        box-shadow: 0 0 0 2px rgba(91,163,224,0.3) !important;
+        outline: none !important;
+    }
+
     /* Tool headers */
     .tool-header {
         background: linear-gradient(90deg, #1F3864 0%, #2E75B6 100%);
@@ -138,6 +161,16 @@ st.markdown("""
         border-left: 3px solid #2E75B6;
     }
     .chat-wrap { max-height: 320px; overflow-y: auto; padding: 4px; }
+
+    /* Annual summary table */
+    .summary-table { width:100%; border-collapse:collapse; font-family:Arial; font-size:13px; margin-top:8px; }
+    .summary-table th { background:#1F3864; color:white; padding:10px 12px; text-align:left; font-weight:700; }
+    .summary-table td { padding:8px 12px; border-bottom:1px solid #E8EEF7; }
+    .summary-table tr:nth-child(even) td { background:#F6F9FF; }
+    .summary-table tr:hover td { background:#EEF4FF; }
+    .util-red   { background:#FF4444 !important; color:white; font-weight:700; text-align:center; border-radius:4px; }
+    .util-amber { background:#FFA500 !important; color:white; font-weight:700; text-align:center; border-radius:4px; }
+    .util-green { background:#70AD47 !important; color:white; font-weight:700; text-align:center; border-radius:4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -174,6 +207,61 @@ def load_uploaded_files(uploaded_files, allowed_types=None):
         paths.append(tmp.name)
     return paths
 
+
+def _persist_upload(cache_key, file_obj):
+    """
+    Cache an uploaded file's bytes in session_state so it survives
+    widget-triggered re-runs (Streamlit re-runs clear file uploader state).
+    Returns dict {"bytes": b"...", "name": "..."} or None.
+    """
+    if file_obj is not None:
+        st.session_state[cache_key] = {
+            "bytes": file_obj.getbuffer().tobytes(),
+            "name":  file_obj.name,
+        }
+    return st.session_state.get(cache_key)
+
+
+def _persist_upload_multi(cache_key, file_list):
+    """
+    Same as _persist_upload but for multiple files (Tool 4 comparison).
+    Returns list of {"bytes", "name"} dicts or [].
+    """
+    if file_list:
+        st.session_state[cache_key] = [
+            {"bytes": f.getbuffer().tobytes(), "name": f.name}
+            for f in file_list
+        ]
+    return st.session_state.get(cache_key, [])
+
+
+
+def _show_file_diagnostics(path, expected_types):
+    """Show what's in the file and what was expected — helps users debug wrong-file uploads."""
+    import traceback as _tb
+    try:
+        xl = pd.ExcelFile(path)
+        sheets = xl.sheet_names
+        raw = pd.read_excel(xl, sheet_name=sheets[0], header=None, nrows=8)
+        with st.expander("🔍 File diagnostics — click to see raw file content", expanded=True):
+            st.markdown(f"**Sheets found:** {', '.join(sheets)}")
+            st.markdown(f"**Expected lab types:** `{expected_types}`")
+            st.markdown("**First 8 rows of data:**")
+            st.dataframe(raw, use_container_width=True)
+            st.markdown("**💡 Tip:** Each tool needs specific lab types in a `Type` column:")
+            st.markdown("- 🔵 Tool 1 → `LCF`, `Creep`")
+            st.markdown("- 🟢 Tool 2 → `Cold Spray`, `HVOF`, `Plasma`")
+            st.markdown("- 🟠 Tool 3 → `Thermal Rig`")
+    except Exception as e:
+        st.warning(f"Could not read file for diagnostics: {e}")
+
+def _bytes_to_tmp(b: bytes) -> str:
+    """Write bytes to a NamedTemporaryFile and return the path."""
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    tmp.write(b)
+    tmp.close()
+    return tmp.name
+
 def get_annual_totals(weekly_df, types, years):
     """Return dict {year: {type: annual_total}}."""
     result = {}
@@ -203,80 +291,106 @@ def generate_excel(tool_fn, *args, **kwargs):
 # ──────────────────────────────────────────────────────────
 
 def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
-    """YoY grouped bar chart + list of individual pie figures (one per year)."""
+    """YoY grouped bar chart + single combined pie figure (all years, each with own legend)."""
+    bar_colors = ["#1F3864","#2E75B6","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
+    pie_colors = ["#2E75B6","#1F3864","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
+
     # ── Bar chart ─────────────────────────────────────────
     fig_bar = go.Figure()
-    bar_colors = ["#1F3864","#2E75B6","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
-
     for i, t in enumerate(types):
         y_vals = [annual_totals[int(y)].get(t, 0) for y in years]
         fig_bar.add_trace(go.Bar(
-            name=t,
-            x=[str(y) for y in years],      # force strings
-            y=y_vals,
+            name=t, x=[str(y) for y in years], y=y_vals,
             marker_color=bar_colors[i % len(bar_colors)],
-            text=[f"{v:.0f}" for v in y_vals],
-            textposition="outside",
+            text=[f"{v:.0f}" for v in y_vals], textposition="outside",
         ))
-
     n_types = len(types)
-    bar_w   = max(0.15, min(0.5, 0.6 / max(n_types, 1)))   # narrower bars when few types
+    bar_w = max(0.15, min(0.5, 0.6 / max(n_types, 1)))
     fig_bar.update_layout(
-        barmode="group",
-        title="Year-on-Year Demand by Lab Type",
-        xaxis=dict(
-            type="category",          # ← forces discrete / no decimals
-            title="Year",
-            tickmode="array",
-            tickvals=[str(y) for y in years],
-            ticktext=[str(y) for y in years],
-        ),
+        barmode="group", title="Year-on-Year Demand by Lab Type",
+        xaxis=dict(type="category", title="Year",
+                   tickmode="array", tickvals=[str(y) for y in years],
+                   ticktext=[str(y) for y in years]),
         yaxis_title="Samples/Year",
         legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
         height=460, plot_bgcolor="white", paper_bgcolor="white",
-        font=dict(family="Arial", size=11),
-        margin=dict(t=50, b=110, r=20),
-        uniformtext=dict(minsize=8, mode="hide"),
-        bargroupgap=0.12,
+        font=dict(family="Arial", size=11), margin=dict(t=50, b=110, r=20),
+        uniformtext=dict(minsize=8, mode="hide"), bargroupgap=0.12,
     )
     fig_bar.update_traces(width=bar_w)
     fig_bar.update_xaxes(showgrid=False)
     fig_bar.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
 
-    # ── Individual pie per year (each with its own legend below) ──
-    pie_colors = ["#1F3864","#2E75B6","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
-    pie_figs = []
-    for year in years:
-        vals   = [annual_totals[int(year)].get(t, 0) for t in types]
-        total  = sum(vals)
-        fig_p  = go.Figure()
-        fig_p.add_trace(go.Pie(
-            labels=types,
-            values=vals,
-            name=str(year),
-            marker=dict(colors=pie_colors[:len(types)]),
-            textinfo="label+percent",
-            hovertemplate="<b>%{label}</b><br>%{value:.0f} samples<br>%{percent}<extra></extra>",
-            hole=0.0,
-        ))
-        fig_p.update_layout(
-            title=dict(text=str(year), x=0.5, xanchor="center",
-                       font=dict(size=13, color="#555")),
-            height=280,
-            showlegend=True,
-            legend=dict(
-                orientation="h",
-                yanchor="top", y=-0.05,   # sits just below the pie
-                xanchor="center", x=0.5,
-                font=dict(size=11),
-            ),
-            margin=dict(t=40, b=60, l=10, r=10),
-            font=dict(family="Arial", size=11),
-            paper_bgcolor="white",
-        )
-        pie_figs.append(fig_p)
+    # ── Single combined pie figure — all years in one row ─
+    n_years = len(years)
+    n_cols  = min(n_years, 4)          # max 4 per row
+    n_rows  = math.ceil(n_years / n_cols)
 
-    return fig_bar, pie_figs
+    specs = [[{"type": "pie"}] * n_cols for _ in range(n_rows)]
+    # pad last row with None if needed
+    last_row_count = n_years % n_cols
+    if last_row_count:
+        for c in range(last_row_count, n_cols):
+            specs[-1][c] = None
+
+    fig_pies = make_subplots(
+        rows=n_rows, cols=n_cols,
+        specs=specs,
+        subplot_titles=[str(y) for y in years],
+        vertical_spacing=0.22,     # room for per-pie legend annotations
+        horizontal_spacing=0.06,
+    )
+
+    for i, year in enumerate(years):
+        r = i // n_cols + 1
+        c = i %  n_cols + 1
+        vals = [annual_totals[int(year)].get(t, 0) for t in types]
+        fig_pies.add_trace(
+            go.Pie(
+                labels=types, values=vals, name=str(year),
+                marker=dict(colors=pie_colors[:len(types)]),
+                textinfo="label+percent",
+                hovertemplate="<b>%{label}</b><br>%{value:.0f} samples  %{percent}<extra></extra>",
+                showlegend=False,   # ← suppress global legend; we use annotations
+            ),
+            row=r, col=c,
+        )
+
+    # Add per-pie legend as coloured-square annotations below each pie
+    for i, year in enumerate(years):
+        r = i // n_cols + 1
+        c = i %  n_cols + 1
+        # domain x-centre for this cell
+        x_step = 1.0 / n_cols
+        x_ctr  = (c - 1 + 0.5) * x_step
+        # domain y-bottom for this row  (row 1 is top in paper coords)
+        y_step = 1.0 / n_rows
+        row_bottom = 1.0 - r * y_step    # 0 = bottom, 1 = top
+        y_ann_start = row_bottom - 0.04  # just below the pie
+
+        for j, (t, col) in enumerate(zip(types, pie_colors)):
+            fig_pies.add_annotation(
+                x=x_ctr,
+                y=y_ann_start - j * 0.055,
+                text=f"<span style='color:{col};font-size:15px'>■</span>"
+                     f"<span style='color:#333;font-size:11px'> {t}</span>",
+                xref="paper", yref="paper",
+                showarrow=False,
+                align="center",
+            )
+
+    leg_height  = len(types) * 22 + 10     # px per type × n_types + padding
+    total_h     = n_rows * 280 + leg_height
+    fig_pies.update_layout(
+        title="Process-wise Demand Share (%) by Year",
+        height=total_h,
+        showlegend=False,
+        paper_bgcolor="white",
+        font=dict(family="Arial", size=11),
+        margin=dict(t=50, b=leg_height + 20, l=10, r=10),
+    )
+
+    return fig_bar, fig_pies
 
 
 def chart_capacity_bar(weekly_df, types, capacities, years):
@@ -612,7 +726,67 @@ def show_util_table(util_df, types, years):
     )
 
 
-def make_editable_excel(weekly_df, util_df, annual_totals, types, capacities, years, title="Lab Data"):
+def show_annual_summary_table(annual_totals, types, years, capacities):
+    """
+    Annual summary table — mirrors Image 3.
+    Columns: Year | Lab Type | Annual Demand | Capacity | Utilization (%) | Status | Vacancy/yr | Vacancy/wk
+    Colour-coded: red >100%, amber 80-100%, green <80%
+    """
+    rows = []
+    for yr in sorted([int(y) for y in years]):
+        for t in types:
+            dem    = annual_totals.get(yr, {}).get(t, 0)
+            cap    = capacities.get(t, 1)
+            util   = dem / cap * 100 if cap > 0 else 0
+            vacant = max(0.0, cap - dem)
+            if util > 100:
+                status = "OVER CAPACITY"
+            elif util >= 80:
+                status = "HIGH"
+            else:
+                status = "OK"
+            rows.append({
+                "Year":               yr,
+                "Lab Type":           t,
+                "Annual Demand":      int(round(dem)),
+                "Capacity":           int(cap),
+                "Utilization (%)":    f"{util:.1f}%",
+                "Status":             status,
+                "Vacancy (slots/yr)": int(vacant),
+                "Vacancy (slots/wk)": f"{vacant / 52:.1f}",
+            })
+
+    df = pd.DataFrame(rows)
+
+    def _style_util(v):
+        if not isinstance(v, str) or "%" not in v:
+            return ""
+        pct = float(v.replace("%", ""))
+        if pct > 100:   return "background-color:#FF4444;color:white;font-weight:700;text-align:center"
+        if pct >= 80:   return "background-color:#FFA500;color:white;font-weight:700;text-align:center"
+        return                  "background-color:#70AD47;color:white;font-weight:700;text-align:center"
+
+    def _style_status(v):
+        if v == "OVER CAPACITY": return "background-color:#FF4444;color:white;font-weight:700"
+        if v == "HIGH":           return "background-color:#FFA500;color:white;font-weight:700"
+        return                           "background-color:#70AD47;color:white;font-weight:700"
+
+    def _style_vacancy(v):
+        if isinstance(v, (int, float)) and v == 0:
+            return "background-color:#FFD7D7;color:#CC0000;font-weight:700"
+        return "background-color:#E2EFDA;color:#375623"
+
+    st.markdown("##### 📋 Annual Summary")
+    styled = (
+        df.style
+          .map(_style_util,    subset=["Utilization (%)"])
+          .map(_style_status,  subset=["Status"])
+          .map(_style_vacancy, subset=["Vacancy (slots/yr)"])
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+
     """Build an editable Excel workbook with 3 sheets and return bytes."""
     import openpyxl
     from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -762,6 +936,10 @@ if "chat_history" not in st.session_state:
 for _tk in ("data_tool1", "data_tool2", "data_tool3"):
     if _tk not in st.session_state:
         st.session_state[_tk] = None
+# Per-tool file caches — survive widget-triggered re-runs
+for _fk in ("_fc_t1", "_fc_t2", "_fc_t3", "_fc_t4"):
+    if _fk not in st.session_state:
+        st.session_state[_fk] = None
 
 
 # ──────────────────────────────────────────────────────────
@@ -1040,6 +1218,13 @@ if "Tool 1" in tool:
         st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
         uploaded = st.file_uploader("", type=["xlsx","xls"], key="t1_file",
                                     label_visibility="collapsed")
+        fc1 = _persist_upload("_fc_t1", uploaded)
+        if fc1 and uploaded is None:
+            st.success(f"✅ {fc1['name']} loaded")
+        if fc1:
+            if st.button("✖ Remove file", key="t1_remove"):
+                st.session_state["_fc_t1"] = None
+                st.rerun()
     with col_b:
         st.markdown('<div class="section-label">LCF Capacity</div>', unsafe_allow_html=True)
         lcf_cap = st.number_input("LCF (samples/yr)", value=50, min_value=1, max_value=9999,
@@ -1055,12 +1240,21 @@ if "Tool 1" in tool:
     caps_1 = {"LCF": lcf_cap, "Creep": creep_cap}
     theme_1 = core.COLOR_THEMES[theme_name]
 
-    if uploaded:
-        paths_1 = load_uploaded_files([uploaded])
-        df_1, col_map_1, err_1, warn_1 = core.load_and_filter(paths_1[0], ["LCF","Creep"])
-
+    if fc1:
+        paths_1 = [_bytes_to_tmp(fc1["bytes"])]
+        try:
+            df_1, col_map_1, err_1, warn_1 = core.load_and_filter(paths_1[0], ["LCF","Creep"])
+        except Exception as _ex:
+            import traceback as _tb
+            st.error(f"❌ File processing failed: {_ex}")
+            st.code(_tb.format_exc())
+            _show_file_diagnostics(paths_1[0], ["LCF","Creep"])
+            err_1 = [str(_ex)]; warn_1 = []; df_1 = None; col_map_1 = {}
         if err_1:
             st.error("❌ " + "\n".join(err_1))
+            _show_file_diagnostics(paths_1[0], ["LCF","Creep"])
+        elif df_1 is None:
+            pass
         else:
             if warn_1:
                 for w in warn_1: st.warning(w)
@@ -1092,14 +1286,10 @@ if "Tool 1" in tool:
                 st.plotly_chart(fig_util, use_container_width=True)
 
             with tabs[1]:
-                fig_bar, pie_figs = chart_yoy_bar_and_pie(annual_1, types_1, years_1,
-                                                           THEME_COLORS[theme_name])
-                st.plotly_chart(fig_bar, use_container_width=True)
-                st.markdown("**Process-wise Demand Share (%) by Year**")
-                pie_cols = st.columns(len(years_1))
-                for pc, pf in zip(pie_cols, pie_figs):
-                    with pc:
-                        st.plotly_chart(pf, use_container_width=True)
+                fig_bar_1, fig_pies_1 = chart_yoy_bar_and_pie(annual_1, types_1, years_1,
+                                                             THEME_COLORS[theme_name])
+                st.plotly_chart(fig_bar_1, use_container_width=True)
+                st.plotly_chart(fig_pies_1, use_container_width=True)
 
             with tabs[2]:
                 fig_cap = chart_capacity_bar(wdf_1, types_1, caps_1, years_1)
@@ -1114,6 +1304,7 @@ if "Tool 1" in tool:
             with tabs[4]:
                 st.markdown("**Utilization Summary (Peak & Avg per year)**")
                 show_util_table(udf_1, types_1, years_1)
+                show_annual_summary_table(annual_1, types_1, years_1, caps_1)
                 st.markdown("---")
                 st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
                 editable_bytes_1 = make_editable_excel(
@@ -1162,6 +1353,13 @@ elif "Tool 2" in tool:
     st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
     uploaded_2 = st.file_uploader("", type=["xlsx","xls"], key="t2_file",
                                    label_visibility="collapsed")
+    fc2 = _persist_upload("_fc_t2", uploaded_2)
+    if fc2 and uploaded_2 is None:
+        st.success(f"✅ {fc2['name']} loaded")
+    if fc2:
+        if st.button("✖ Remove file", key="t2_remove"):
+            st.session_state["_fc_t2"] = None
+            st.rerun()
 
     # ── Capacity config ───────────────────────────────────
     st.markdown('<div class="section-label">⚙️ Capacity Configuration — Each Lab is Independent</div>', unsafe_allow_html=True)
@@ -1183,13 +1381,22 @@ elif "Tool 2" in tool:
     theme_name_2 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t2_theme")
     theme_2 = core.COLOR_THEMES[theme_name_2]
 
-    if uploaded_2:
+    if fc2:
         COATING_TYPES = ["Cold Spray", "HVOF", "Plasma"]
-        paths_2 = load_uploaded_files([uploaded_2])
-        df_2, col_map_2, err_2, warn_2 = core.load_and_filter(paths_2[0], COATING_TYPES)
-
+        paths_2 = [_bytes_to_tmp(fc2["bytes"])]
+        try:
+            df_2, col_map_2, err_2, warn_2 = core.load_and_filter(paths_2[0], COATING_TYPES)
+        except Exception as _ex:
+            import traceback as _tb
+            st.error(f"❌ File processing failed: {_ex}")
+            st.code(_tb.format_exc())
+            _show_file_diagnostics(paths_2[0], COATING_TYPES)
+            err_2 = [str(_ex)]; warn_2 = []; df_2 = None; col_map_2 = {}
         if err_2:
             st.error("❌ " + "\n".join(err_2))
+            _show_file_diagnostics(paths_2[0], COATING_TYPES)
+        elif df_2 is None:
+            pass
         else:
             if warn_2:
                 for w in warn_2: st.warning(w)
@@ -1253,14 +1460,10 @@ elif "Tool 2" in tool:
                 st.plotly_chart(fig_u2, use_container_width=True)
 
             with tabs2[1]:
-                fig_bar2, pie_figs2 = chart_yoy_bar_and_pie(annual_2, types_2, years_2,
-                                                              THEME_COLORS[theme_name_2])
+                fig_bar2, fig_pies_2 = chart_yoy_bar_and_pie(annual_2, types_2, years_2,
+                                                               THEME_COLORS[theme_name_2])
                 st.plotly_chart(fig_bar2, use_container_width=True)
-                st.markdown("**Process-wise Demand Share (%) by Year**")
-                pie_cols2 = st.columns(len(years_2))
-                for pc, pf in zip(pie_cols2, pie_figs2):
-                    with pc:
-                        st.plotly_chart(pf, use_container_width=True)
+                st.plotly_chart(fig_pies_2, use_container_width=True)
 
             with tabs2[2]:
                 fig_cap2 = chart_capacity_bar(wdf_2, types_2, ind_caps_2, years_2)
@@ -1274,6 +1477,7 @@ elif "Tool 2" in tool:
 
             with tabs2[4]:
                 show_util_table(udf_2, types_2, years_2)
+                show_annual_summary_table(annual_2, types_2, years_2, ind_caps_2)
                 st.markdown("---")
                 st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
                 editable_bytes_2 = make_editable_excel(
@@ -1321,6 +1525,13 @@ elif "Tool 3" in tool:
     st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
     uploaded_t3 = st.file_uploader("", type=["xlsx","xls"], key="t3_file",
                                     label_visibility="collapsed")
+    fc3 = _persist_upload("_fc_t3", uploaded_t3)
+    if fc3 and uploaded_t3 is None:
+        st.success(f"✅ {fc3['name']} loaded")
+    if fc3:
+        if st.button("✖ Remove file", key="t3_remove"):
+            st.session_state["_fc_t3"] = None
+            st.rerun()
 
     # ── Capacity config ───────────────────────────────────
     st.markdown('<div class="section-label">⚙️ Rig Capacity (samples/year)</div>', unsafe_allow_html=True)
@@ -1335,12 +1546,21 @@ elif "Tool 3" in tool:
     theme_name_t3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t3_theme")
     theme_t3 = core.COLOR_THEMES[theme_name_t3]
 
-    if uploaded_t3:
-        paths_t3 = load_uploaded_files([uploaded_t3])
-        df_t3, col_map_t3, err_t3, warn_t3 = core.load_and_filter(paths_t3[0], thermal_types)
-
+    if fc3:
+        paths_t3 = [_bytes_to_tmp(fc3["bytes"])]
+        try:
+            df_t3, col_map_t3, err_t3, warn_t3 = core.load_and_filter(paths_t3[0], thermal_types)
+        except Exception as _ex:
+            import traceback as _tb
+            st.error(f"❌ File processing failed: {_ex}")
+            st.code(_tb.format_exc())
+            _show_file_diagnostics(paths_t3[0], thermal_types)
+            err_t3 = [str(_ex)]; warn_t3 = []; df_t3 = None; col_map_t3 = {}
         if err_t3:
             st.error("❌ " + "\n".join(err_t3))
+            _show_file_diagnostics(paths_t3[0], thermal_types)
+        elif df_t3 is None:
+            pass
         else:
             if warn_t3:
                 for w in warn_t3:
@@ -1374,14 +1594,10 @@ elif "Tool 3" in tool:
                 st.plotly_chart(fig_ut3, use_container_width=True)
 
             with tabs_t3[1]:
-                fig_bar_t3, pie_figs_t3 = chart_yoy_bar_and_pie(
+                fig_bar_t3, fig_pies_t3 = chart_yoy_bar_and_pie(
                     annual_t3, types_t3, years_t3, THEME_COLORS[theme_name_t3])
                 st.plotly_chart(fig_bar_t3, use_container_width=True)
-                st.markdown("**Process-wise Demand Share (%) by Year**")
-                pie_cols_t3 = st.columns(len(years_t3))
-                for pc, pf in zip(pie_cols_t3, pie_figs_t3):
-                    with pc:
-                        st.plotly_chart(pf, use_container_width=True)
+                st.plotly_chart(fig_pies_t3, use_container_width=True)
 
             with tabs_t3[2]:
                 fig_cap_t3 = chart_capacity_bar(wdf_t3, types_t3, rig_caps_t3, years_t3)
@@ -1398,6 +1614,7 @@ elif "Tool 3" in tool:
             with tabs_t3[4]:
                 st.markdown("**Utilization Summary (Peak & Avg per year)**")
                 show_util_table(udf_t3, types_t3, years_t3)
+                show_annual_summary_table(annual_t3, types_t3, years_t3, rig_caps_t3)
                 st.markdown("---")
                 st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
                 editable_bytes_t3 = make_editable_excel(
@@ -1458,8 +1675,15 @@ elif "Tool 4" in tool:
         label_visibility="collapsed",
         help="Upload one combined file OR up to 3 separate files (one per lab group). Duplicates are merged.",
     )
-    if uploaded_3:
+    fc4_list = _persist_upload_multi("_fc_t4", uploaded_3 or [])
+    if fc4_list and not uploaded_3:
+        st.success(f"✅ {len(fc4_list)} file(s) loaded: {', '.join(f['name'] for f in fc4_list)}")
+    elif uploaded_3:
         st.success(f"✅ {len(uploaded_3)} file(s) loaded: {', '.join(f.name for f in uploaded_3)}")
+    if fc4_list:
+        if st.button("✖ Remove files", key="t4_remove"):
+            st.session_state["_fc_t4"] = None
+            st.rerun()
 
     # ── Capacities — 3 columns, one per group ─────────────
     cc1, cc2, cc3 = st.columns(3)
@@ -1491,8 +1715,8 @@ elif "Tool 4" in tool:
     theme_name_3 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t4_theme")
     theme_3 = core.COLOR_THEMES[theme_name_3]
 
-    if uploaded_3:
-        paths_3 = load_uploaded_files(uploaded_3)
+    if fc4_list:
+        paths_3 = [_bytes_to_tmp(f["bytes"]) for f in fc4_list]
         merged_df, col_map_3, errors_3, file_log_3 = merge_files(paths_3)
 
         for log_line in file_log_3:
@@ -1679,26 +1903,20 @@ elif "Tool 4" in tool:
 
             with tabs4[1]:
                 st.subheader("🔵 Mechanical Labs — Process Share")
-                _, pie_figs_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
+                _, fig_pies_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
                                                          THEME_COLORS[theme_name_3])
-                pie_ca3 = st.columns(len(years_a3))
-                for pc, pf in zip(pie_ca3, pie_figs_a3):
-                    with pc: st.plotly_chart(pf, use_container_width=True)
+                st.plotly_chart(fig_pies_a3, use_container_width=True)
 
                 st.subheader("🟢 Coating Labs — Process Share")
-                _, pie_figs_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
+                _, fig_pies_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
                                                          THEME_COLORS[theme_name_3])
-                pie_cb3 = st.columns(len(years_b3))
-                for pc, pf in zip(pie_cb3, pie_figs_b3):
-                    with pc: st.plotly_chart(pf, use_container_width=True)
+                st.plotly_chart(fig_pies_b3, use_container_width=True)
 
                 if has_c3:
                     st.subheader("🟠 Thermal Lab — Process Share")
-                    _, pie_figs_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
+                    _, fig_pies_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
                                                              THEME_COLORS[theme_name_3])
-                    pie_cc3 = st.columns(len(years_c3))
-                    for pc, pf in zip(pie_cc3, pie_figs_c3):
-                        with pc: st.plotly_chart(pf, use_container_width=True)
+                    st.plotly_chart(fig_pies_c3, use_container_width=True)
 
             with tabs4[2]:
                 st.plotly_chart(fig_util3, use_container_width=True)

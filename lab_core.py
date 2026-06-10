@@ -316,7 +316,7 @@ def _fuzzy_match_type(cell_value, allowed_types):
 
 def _is_monthly_block_format(path):
     """
-    Detect the GE Vernova monthly-block format:
+    Detect the monthly-block format:
       - Sheet names are years (e.g. '2024', '2025')
       - No column headers; repeating 5-row monthly blocks:
           [date_row]
@@ -351,7 +351,7 @@ def _is_monthly_block_format(path):
 
 def _parse_monthly_blocks(xl, year_sheets, allowed_types):
     """
-    Parse the GE Vernova monthly-block format.
+    Parse the monthly-block format.
 
     Each sheet = one year.
     Each ~5-row block contains one month of data:
@@ -474,7 +474,7 @@ def load_and_filter(path, allowed_types):
     (df, col_map, errors, warns).
 
     Handles:
-    - GE Vernova monthly-block format (year-named sheets, keyword/value pairs)
+    - monthly-block format (year-named sheets, keyword/value pairs)
     - Junk / title rows above the real header
     - Data on any sheet (scans all, picks best)
     - Wide format (Year | LabType1 | LabType2 ...) and long format
@@ -484,7 +484,7 @@ def load_and_filter(path, allowed_types):
     - Year values like 'FY2024', '2024-25', dates
     - Extra/junk columns (Notes, Remarks, etc.)
     """
-    # ── 0. GE Vernova monthly-block format (highest priority) ─
+    # ── 0. monthly-block format (highest priority) ─
     is_block, xl_obj, year_sheets = _is_monthly_block_format(path)
     if is_block:
         annual_df, block_warns = _parse_monthly_blocks(xl_obj, year_sheets, allowed_types)
