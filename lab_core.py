@@ -101,7 +101,7 @@ def section_hdr(ws, row, text, col_end, bg="2E75B6"):
 # ─────────────────────────────────────────────
 def detect_columns(df):
     mapping = {}
-    cols_lower = {c.lower().strip(): c for c in df.columns}
+    cols_lower = {str(c).lower().strip(): c for c in df.columns}
     for field, aliases in COLUMN_ALIASES.items():
         for alias in aliases:
             for cl, co in cols_lower.items():
@@ -349,7 +349,7 @@ def _is_monthly_block_format(path):
     return False, xl, []
 
 
-def _parse_monthly_blocks(xl, year_sheets, allowed_types):
+def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
     """
     Parse the monthly-block format.
 
@@ -430,18 +430,44 @@ def _parse_monthly_blocks(xl, year_sheets, allowed_types):
 
     # ── Assign type name ──────────────────────────────────
     # If exactly one allowed_type, all data belongs to it.
-    # If multiple, try to find a type label anywhere in the file (future).
     if len(allowed_types) == 1:
         type_name = allowed_types[0]
     else:
-        # Try fuzzy matching against the file name or sheet names
-        # Default: use the first allowed type and warn
-        type_name = allowed_types[0]
-        warns.append(
-            f"Multiple lab types expected {allowed_types}. "
-            f"All monthly-block data assigned to '{type_name}'. "
-            "Upload one file per lab type for best results."
-        )
+        # Try to infer the lab type from the source filename
+        # e.g. "Thermal_Lab.xlsx" -> matches "Thermal Rig"
+        type_name = None
+        if source_path:
+            fname_lower = os.path.basename(source_path).lower()
+            fname_clean = fname_lower.replace("_", " ").replace("-", " ")
+            for t in allowed_types:
+                t_words = t.lower().split()
+                if all(w in fname_clean for w in t_words):
+                    type_name = t
+                    break
+            if type_name is None:
+                # Try single significant word match (>=4 chars)
+                for t in allowed_types:
+                    for w in t.lower().split():
+                        if len(w) >= 4 and w in fname_clean:
+                            type_name = t
+                            break
+                    if type_name:
+                        break
+
+        if type_name:
+            warns.append(
+                f"Multiple lab types possible {allowed_types}. "
+                f"Inferred '{type_name}' from filename."
+            )
+        else:
+            # Default: use the first allowed type and warn
+            type_name = allowed_types[0]
+            warns.append(
+                f"Multiple lab types expected {allowed_types}. "
+                f"All monthly-block data assigned to '{type_name}'. "
+                "Upload one file per lab type for best results, "
+                "or include the lab type name in the filename."
+            )
 
     # ── Aggregate to annual totals ────────────────────────
     annual = (detail.groupby('Year')['Removed']
@@ -487,7 +513,7 @@ def load_and_filter(path, allowed_types):
     # ── 0. monthly-block format (highest priority) ─
     is_block, xl_obj, year_sheets = _is_monthly_block_format(path)
     if is_block:
-        annual_df, block_warns = _parse_monthly_blocks(xl_obj, year_sheets, allowed_types)
+        annual_df, block_warns = _parse_monthly_blocks(xl_obj, year_sheets, allowed_types, source_path=path)
         if annual_df is not None and not annual_df.empty:
             col_map = {'year': 'Year', 'type': 'Type', 'value': 'Value'}
             return annual_df, col_map, [], block_warns

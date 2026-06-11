@@ -255,8 +255,19 @@ def _show_file_diagnostics(path, expected_types):
     except Exception as e:
         st.warning(f"Could not read file for diagnostics: {e}")
 
-def _bytes_to_tmp(b: bytes) -> str:
-    """Write bytes to a NamedTemporaryFile and return the path."""
+def _bytes_to_tmp(b: bytes, original_name: str = None) -> str:
+    """
+    Write bytes to a temp file and return the path.
+    If original_name is given, the temp file is named to preserve it
+    (so filename-based heuristics like monthly-block type inference work).
+    """
+    if original_name:
+        safe_name = os.path.basename(original_name)
+        tmp_dir = tempfile.mkdtemp()
+        path = os.path.join(tmp_dir, safe_name)
+        with open(path, "wb") as f:
+            f.write(b)
+        return path
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
     tmp.write(b)
     tmp.close()
@@ -338,7 +349,9 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
             text=[f"{v:.0f}" for v in y_vals], textposition="outside",
         ))
     n_types = len(types)
-    bar_w = max(0.15, min(0.5, 0.6 / max(n_types, 1)))
+    # Divide by max(n_types,2) so single-type charts (Tool 3 / Tool 4 Thermal)
+    # get the same bar width as Tool 1 (2 types) instead of an oversized 0.5
+    bar_w = max(0.15, min(0.5, 0.6 / max(n_types, 2)))
     fig_bar.update_layout(
         barmode="group", title="Year-on-Year Demand by Lab Type",
         xaxis=dict(type="category", title="Year",
@@ -400,9 +413,17 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
     # Width each column occupies
     col_w = (1.0 - (NCOLS - 1) * HS) / NCOLS
 
-    # Width of one legend item (square + text)
-    LEG_ITEM_W = 0.07
-    TOTAL_LEG_W = len(types) * LEG_ITEM_W
+    # Variable-width legend items: swatch + text width (scales with label length)
+    # so long labels like "Cold Spray" don't overlap short ones like "HVOF"
+    SWATCH_W = 0.020   # space reserved for the ■ glyph
+    CHAR_W   = 0.0078  # approx width per character at font-size 10
+    GAP_W    = 0.018   # trailing gap between legend items
+
+    def _item_width(label):
+        return SWATCH_W + len(label) * CHAR_W + GAP_W
+
+    item_widths = [_item_width(t) for t in types]
+    TOTAL_LEG_W = sum(item_widths)
 
     for i, year in enumerate(years):
         row_i = i // NCOLS   # 0-indexed
@@ -420,8 +441,9 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
         # Starting x for first legend item (centred group)
         x_start = x_ctr - TOTAL_LEG_W / 2
 
+        x_cursor = x_start
         for j, (t, col) in enumerate(zip(types, pie_colors)):
-            x0 = x_start + j * LEG_ITEM_W
+            x0 = x_cursor
             # Colored ■ swatch
             fig_pies.add_annotation(
                 x=x0, y=y_leg,
@@ -433,13 +455,14 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
             )
             # Type label
             fig_pies.add_annotation(
-                x=x0 + 0.022, y=y_leg,
+                x=x0 + SWATCH_W, y=y_leg,
                 text=t,
                 font=dict(color="#333", size=10, family="Arial"),
                 xref="paper", yref="paper",
                 showarrow=False,
                 xanchor="left",
             )
+            x_cursor += item_widths[j]
 
     # Bottom margin must be large enough for row NROWS annotations (y may be negative)
     bottom_margin = max(60, int(len(types) * 18 + 40))
@@ -464,6 +487,11 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
     bar_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6","#C6EFCE"]
 
     # ── Demand bars per year ──────────────────────────────
+    n_types = len(types)
+    # Same width formula as chart_yoy_bar_and_pie — keeps single-type
+    # charts (Tool 3 / Tool 4 Thermal) visually consistent with Tool 1/2
+    bar_w = max(0.15, min(0.5, 0.6 / max(n_types, 2)))
+
     demand_vals = []
     for yi, year in enumerate(years):
         yd   = weekly_df[weekly_df["Year"] == year]
@@ -476,6 +504,7 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
             text=[f"{v:.2f}" for v in avgs],
             textposition="outside",
             textfont=dict(size=9),
+            width=bar_w,
         ))
 
     # ── Capacity: scatter markers (▬) at cap level per type ──
@@ -548,14 +577,27 @@ def chart_utilization_line(util_df, types, years, colors):
     fig.add_hline(y=0.8, line_dash="dot", line_color="#FFD700",
                   annotation_text="80% Threshold", annotation_position="right")
 
+    # ── Dynamic legend sizing — avoids overlap with axis title
+    # when there are many year × type combinations ──────────
+    n_entries     = len(years) * len(types)
+    entries_per_row = 6
+    legend_rows   = max(1, math.ceil(n_entries / entries_per_row))
+    legend_y      = -0.18 - (legend_rows - 1) * 0.09
+    margin_b      = 90 + legend_rows * 38
+    chart_height  = 440 + max(0, legend_rows - 2) * 40
+
     fig.update_layout(
         title="Monthly Utilization Trend by Lab Type",
-        xaxis_title="Month", yaxis_title="Utilization",
+        xaxis_title=None,   # "Month" removed — labels (Jan–Dec) are self-explanatory
+                            # and prevented overlap with the multi-row legend below
+        yaxis_title="Utilization",
         yaxis_tickformat=".0%",
-        height=440, plot_bgcolor="white", paper_bgcolor="white",
+        height=chart_height, plot_bgcolor="white", paper_bgcolor="white",
         font=dict(family="Arial", size=12),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.4),
-        margin=dict(b=120),
+        legend=dict(orientation="h", yanchor="top", y=legend_y,
+                    x=0.5, xanchor="center",
+                    font=dict(size=10)),
+        margin=dict(b=margin_b),
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
@@ -1781,7 +1823,7 @@ elif "Tool 4" in tool:
     theme_3 = core.COLOR_THEMES[theme_name_3]
 
     if fc4_list:
-        paths_3 = [_bytes_to_tmp(f["bytes"]) for f in fc4_list]
+        paths_3 = [_bytes_to_tmp(f["bytes"], original_name=f["name"]) for f in fc4_list]
         merged_df, col_map_3, errors_3, file_log_3 = merge_files(paths_3)
 
         for log_line in file_log_3:

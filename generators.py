@@ -499,8 +499,14 @@ ALL_TYPES = GROUP_A["types"] + GROUP_B["types"] + GROUP_C["types"]
 
 def merge_files(file_paths):
     """
-    Load >=1 Excel files, normalise columns, merge into single DataFrame.
+    Load >=1 Excel files using the smart parser (core.load_and_filter), normalise,
+    and merge into a single long-format DataFrame.
     Duplicate Year+Type rows across files are SUMMED.
+
+    Uses ALL_TYPES as the allowed-type universe so any of LCF, Creep,
+    Cold Spray, HVOF, Plasma, Thermal Rig data is accepted from any file —
+    including messy/monthly-block formats handled by load_and_filter.
+
     Returns: (merged_df, col_map, errors, file_log)
     """
     frames = []
@@ -510,26 +516,24 @@ def merge_files(file_paths):
     for path in file_paths:
         fname = os.path.basename(path)
         try:
-            raw = pd.read_excel(path)
+            df_loaded, col_map, errs_l, warns_l = core.load_and_filter(path, ALL_TYPES)
         except Exception as e:
-            errors.append(f"Cannot open '{fname}': {e}")
+            errors.append(f"Cannot process '{fname}': {e}")
             continue
 
-        if raw.empty:
-            file_log.append(f"SKIPPED (empty): {fname}")
+        if errs_l:
+            errors.append(f"'{fname}': {'; '.join(errs_l)}")
             continue
 
-        col_map = core.detect_columns(raw)
-        missing_cols = [k for k in ["year","type","value"] if k not in col_map]
-        if missing_cols:
-            errors.append(
-                f"'{fname}' missing required columns: {missing_cols}. "
-                f"Found: {list(raw.columns)}"
-            )
+        if df_loaded is None or df_loaded.empty:
+            file_log.append(f"SKIPPED (empty/no matching types): {fname}")
             continue
 
-        yc, tc, vc = col_map["year"], col_map["type"], col_map["value"]
-        df = raw[[yc, tc, vc]].copy()
+        yc = col_map.get("year", "Year")
+        tc = col_map.get("type", "Type")
+        vc = col_map.get("value", "Value")
+
+        df = df_loaded[[yc, tc, vc]].copy()
         df.columns = ["Year", "Type", "Value"]
         df["Value"] = pd.to_numeric(df["Value"], errors="coerce").fillna(0)
         df["Year"]  = pd.to_numeric(df["Year"],  errors="coerce")
@@ -537,13 +541,20 @@ def merge_files(file_paths):
         df["Year"]  = df["Year"].astype(int)
         df["Type"]  = df["Type"].astype(str).str.strip()
 
-        # Normalise type names (case-insensitive)
+        # Normalise type names (case-insensitive) to canonical ALL_TYPES spelling
         known = {t.lower(): t for t in ALL_TYPES}
         df["Type"] = df["Type"].apply(lambda x: known.get(x.lower(), x))
 
         rows_kept = len(df)
+        if rows_kept == 0:
+            file_log.append(f"SKIPPED (no usable rows): {fname}")
+            continue
+
         frames.append(df)
-        file_log.append(f"OK ({rows_kept} rows): {fname}")
+        log_line = f"OK ({rows_kept} rows): {fname}"
+        if warns_l:
+            log_line += f"  [{'; '.join(warns_l)}]"
+        file_log.append(log_line)
 
     if errors:
         return None, {}, errors, file_log
