@@ -332,14 +332,8 @@ def _is_monthly_block_format(path):
     except Exception:
         return False, None, []
 
-    # Sheet names are expected to represent a year, but real-world workbooks
-    # often label them "YEAR 2024", "FY 2024", "2024 Data", etc. rather than
-    # a bare "2024". Search for a 20xx year ANYWHERE in the name instead of
-    # requiring the whole name to be exactly 4 digits — this was the cause
-    # of "No valid rows after removing nulls" for files using a "YEAR "
-    # prefix even though the underlying block data was perfectly valid.
-    YEAR_RE = _re.compile(r'(20\d{2})')
-    year_sheets = [s for s in xl.sheet_names if YEAR_RE.search(str(s).strip())]
+    YEAR_RE = _re.compile(r'^(20\d{2})$')
+    year_sheets = [s for s in xl.sheet_names if YEAR_RE.match(str(s).strip())]
     if not year_sheets:
         return False, xl, []
 
@@ -373,15 +367,13 @@ def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
     """
     warns = []
     monthly_rows = []   # one row per month per year
-    import re as _re
-    _YEAR_EXTRACT = _re.compile(r'(20\d{2})')
 
     for sheet in year_sheets:
-        m = _YEAR_EXTRACT.search(str(sheet).strip())
-        if not m:
+        try:
+            year = int(str(sheet).strip())
+        except ValueError:
             warns.append(f"Sheet '{sheet}' skipped — name is not a valid year.")
             continue
-        year = int(m.group(1))
 
         try:
             raw = pd.read_excel(xl, sheet_name=sheet, header=None)
