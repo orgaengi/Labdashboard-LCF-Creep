@@ -208,6 +208,28 @@ def load_uploaded_files(uploaded_files, allowed_types=None):
     return paths
 
 
+def _uploader_key(base_key):
+    """
+    Return a versioned widget key for a file_uploader.
+
+    Streamlit's file_uploader keeps its uploaded files tied to its `key`
+    across script reruns — clicking a "Remove" button that only clears our
+    own session_state cache does nothing, because on the very next rerun
+    the widget (same key) hands back the same files and they get re-cached
+    immediately. The standard fix is to change the widget's key, which
+    makes Streamlit treat it as a brand-new, empty widget instance.
+    """
+    v = st.session_state.get(f"{base_key}_v", 0)
+    return f"{base_key}_{v}"
+
+
+def _reset_uploader(base_key, cache_key):
+    """Bump a file_uploader's key version and clear its cached files — call
+    this from a 'Remove file(s)' button instead of just clearing cache_key."""
+    st.session_state[f"{base_key}_v"] = st.session_state.get(f"{base_key}_v", 0) + 1
+    st.session_state[cache_key] = None
+
+
 def _persist_upload(cache_key, file_obj):
     """
     Cache an uploaded file's bytes in session_state so it survives
@@ -1442,7 +1464,7 @@ if "Tool 1" in tool:
     with col_a:
         st.markdown('<div class="section-label">📂 Upload Excel File(s)</div>', unsafe_allow_html=True)
         uploaded_1 = st.file_uploader(
-            "", type=["xlsx", "xls"], key="t1_file",
+            "", type=["xlsx", "xls"], key=_uploader_key("t1_file"),
             accept_multiple_files=True, label_visibility="collapsed",
             help="Upload one combined file, or one file per lab type (e.g. one "
                  "monthly-block file for LCF and another for Creep) — they'll be merged.",
@@ -1454,7 +1476,7 @@ if "Tool 1" in tool:
             st.success(f"✅ {len(uploaded_1)} file(s) loaded: {', '.join(f.name for f in uploaded_1)}")
         if fc1_list:
             if st.button("✖ Remove file(s)", key="t1_remove"):
-                st.session_state["_fc_t1"] = None
+                _reset_uploader("t1_file", "_fc_t1")
                 st.rerun()
     with col_b:
         st.markdown('<div class="section-label">LCF Capacity</div>', unsafe_allow_html=True)
@@ -1589,7 +1611,7 @@ elif "Tool 2" in tool:
     # ── File upload ───────────────────────────────────────
     st.markdown('<div class="section-label">📂 Upload Excel File(s)</div>', unsafe_allow_html=True)
     uploaded_2 = st.file_uploader(
-        "", type=["xlsx", "xls"], key="t2_file",
+        "", type=["xlsx", "xls"], key=_uploader_key("t2_file"),
         accept_multiple_files=True, label_visibility="collapsed",
         help="Upload one combined file, or one file per lab type (e.g. separate "
              "monthly-block files for Cold Spray, HVOF, Plasma) — they'll be merged.",
@@ -1601,7 +1623,7 @@ elif "Tool 2" in tool:
         st.success(f"✅ {len(uploaded_2)} file(s) loaded: {', '.join(f.name for f in uploaded_2)}")
     if fc2_list:
         if st.button("✖ Remove file(s)", key="t2_remove"):
-            st.session_state["_fc_t2"] = None
+            _reset_uploader("t2_file", "_fc_t2")
             st.rerun()
 
     # ── Capacity config ───────────────────────────────────
@@ -1772,20 +1794,20 @@ elif "Tool 3" in tool:
 
     # ── File upload ───────────────────────────────────────
     st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
-    uploaded_t3 = st.file_uploader("", type=["xlsx","xls"], key="t3_file",
+    uploaded_t3 = st.file_uploader("", type=["xlsx","xls"], key=_uploader_key("t3_file"),
                                     label_visibility="collapsed")
     fc3 = _persist_upload("_fc_t3", uploaded_t3)
     if fc3 and uploaded_t3 is None:
         st.success(f"✅ {fc3['name']} loaded")
     if fc3:
         if st.button("✖ Remove file", key="t3_remove"):
-            st.session_state["_fc_t3"] = None
+            _reset_uploader("t3_file", "_fc_t3")
             st.rerun()
 
     # ── Capacity config ───────────────────────────────────
     st.markdown('<div class="section-label">⚙️ Rig Capacity (samples/year)</div>', unsafe_allow_html=True)
 
-    r1_cap = st.number_input("🔶 Thermal Rig capacity", value=200, min_value=1, max_value=9999,
+    r1_cap = st.number_input("🔶 Thermal Rig capacity", value=20, min_value=1, max_value=9999,
                               key="t3_r1")
     st.caption(f"→ {r1_cap/52:.1f} samples/wk  |  Vacant if below capacity")
 
@@ -1920,7 +1942,7 @@ elif "Tool 4" in tool:
         "",
         type=["xlsx","xls"],
         accept_multiple_files=True,
-        key="t4_files",
+        key=_uploader_key("t4_files"),
         label_visibility="collapsed",
         help="Upload one combined file OR up to 3 separate files (one per lab group). Duplicates are merged.",
     )
@@ -1931,7 +1953,7 @@ elif "Tool 4" in tool:
         st.success(f"✅ {len(uploaded_3)} file(s) loaded: {', '.join(f.name for f in uploaded_3)}")
     if fc4_list:
         if st.button("✖ Remove files", key="t4_remove"):
-            st.session_state["_fc_t4"] = None
+            _reset_uploader("t4_files", "_fc_t4")
             st.rerun()
 
     # ── Capacities — 3 columns, one per group ─────────────
@@ -1957,7 +1979,7 @@ elif "Tool 4" in tool:
 
     with cc3:
         st.markdown('<div class="section-label">🟠 Thermal Capacities</div>', unsafe_allow_html=True)
-        tr1 = st.number_input("Thermal Rig", value=200, min_value=1, key="t4_r1")
+        tr1 = st.number_input("Thermal Rig", value=20, min_value=1, key="t4_r1")
         caps_c3 = {"Thermal Rig": tr1}
         st.caption(f"→ {tr1/52:.1f}/wk")
 
