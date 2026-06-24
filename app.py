@@ -496,77 +496,71 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors, lab_name=""):
     fig_bar.update_xaxes(showgrid=False)
     fig_bar.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
 
-    # ── Single combined pie figure ─────────────────────────
-    n         = len(years)
-    NCOLS     = min(n, 4)
-    NROWS     = math.ceil(n / NCOLS)
-    VS        = 0.28      # vertical spacing between rows — leaves room for legends
-    HS        = 0.04
+    # ── Single combined pie figure — balanced rows, all manually positioned ──
+    # Using explicit pie domains (not make_subplots) so that year-title
+    # annotations always travel with their pie when a row is centred.
+    #
+    # NCOLS balanced formula — distributes pies as evenly as possible,
+    # maximum 4 per row, first row ≥ second row:
+    #   n=5 → ceil(5/ceil(5/4))=ceil(5/2)=3  → 3+2  (last row centred)
+    #   n=6 → ceil(6/ceil(6/4))=ceil(6/2)=3  → 3+3
+    #   n=7 → ceil(7/ceil(7/4))=ceil(7/2)=4  → 4+3  (last row centred)
+    #   n=8 → ceil(8/ceil(8/4))=ceil(8/2)=4  → 4+4
+    #   n=9 → ceil(9/ceil(9/4))=ceil(9/3)=3  → 3+3+3
+    n           = len(years)
+    MAX_PER_ROW = 4
+    NCOLS = math.ceil(n / math.ceil(n / MAX_PER_ROW)) if n > MAX_PER_ROW else n
+    NROWS = math.ceil(n / NCOLS)
 
-    specs = []
-    for r in range(NROWS):
-        row = []
-        for c in range(NCOLS):
-            row.append({"type": "pie"} if r * NCOLS + c < n else None)
-        specs.append(row)
+    VS           = 0.26    # vertical gap between rows (paper fraction)
+    HS           = 0.06    # horizontal gap between pies (paper fraction)
+    PIE_Y_RESERV = 0.08    # fraction of row_h reserved at bottom for legend
 
-    fig_pies = make_subplots(
-        rows=NROWS, cols=NCOLS,
-        specs=specs,
-        subplot_titles=[str(int(y)) for y in years],
-        vertical_spacing=VS,
-        horizontal_spacing=HS,
-    )
+    row_h = (1.0 - (NROWS - 1) * VS) / NROWS
+    col_w = (1.0 - (NCOLS - 1) * HS) / NCOLS
+
+    fig_pies = go.Figure()
 
     for i, year in enumerate(years):
-        r = i // NCOLS + 1
-        c = i %  NCOLS + 1
+        row_i = i // NCOLS      # 0-based row
+        col_i = i %  NCOLS      # 0-based column within the row
+
+        # Pies in this row (last row may be shorter → centred)
+        n_last   = n % NCOLS    # 0 → last row is full
+        n_in_row = (n_last if (row_i == NROWS - 1 and n_last > 0) else NCOLS)
+
+        # ── X domain: centre all pies in their row ───────
+        total_row_w = n_in_row * col_w + (n_in_row - 1) * HS
+        x_row_start = (1.0 - total_row_w) / 2
+        x0 = x_row_start + col_i * (col_w + HS)
+        x1 = x0 + col_w
+
+        # ── Y domain: reserve bottom strip for legend ────
+        y_top = 1.0 - row_i * (row_h + VS)
+        y_bot = y_top - row_h * (1.0 - PIE_Y_RESERV)
+
         vals = [annual_totals[int(year)].get(t, 0) for t in types]
-        fig_pies.add_trace(
-            go.Pie(
-                labels=list(types), values=vals, name=str(int(year)),
-                marker=dict(colors=pie_colors[:len(types)],
-                            line=dict(color="#FFF", width=2)),
-                textinfo="label+percent",
-                textfont=dict(size=10),
-                hovertemplate="<b>%{label}</b><br>%{value:.0f} samples<br>%{percent}<extra></extra>",
-                showlegend=False,
-            ),
-            row=r, col=c,
+        fig_pies.add_trace(go.Pie(
+            labels=list(types), values=vals, name=str(int(year)),
+            marker=dict(colors=pie_colors[:len(types)],
+                        line=dict(color="#FFF", width=2)),
+            textinfo="label+percent",
+            textfont=dict(size=10),
+            domain=dict(x=[x0, x1], y=[y_bot, y_top]),
+            hovertemplate="<b>%{label}</b><br>%{value:.0f} samples<br>%{percent}<extra></extra>",
+            showlegend=False,
+        ))
+
+        # ── Year label: sits just above the pie top ──────
+        fig_pies.add_annotation(
+            x=(x0 + x1) / 2, y=y_top,
+            text=str(int(year)),
+            xref="paper", yref="paper", showarrow=False,
+            font=dict(size=13, color="#555", family="Arial"),
+            xanchor="center", yanchor="bottom",
         )
 
-    # ── Centre the last row when it is not completely full ─
-    n_last = n % NCOLS   # 0 means last row is full
-    col_w  = (1.0 - (NCOLS - 1) * HS) / NCOLS
-    if n_last > 0 and NROWS > 1:
-        # Total width occupied by n_last centred pies
-        total_w = n_last * col_w + (n_last - 1) * HS
-        x_start = (1.0 - total_w) / 2
-        last_row_trace_start = (NROWS - 1) * NCOLS
-        for j in range(n_last):
-            trace_idx = last_row_trace_start + j
-            if trace_idx < len(fig_pies.data):
-                new_x0 = x_start + j * (col_w + HS)
-                new_x1 = new_x0 + col_w
-                cur_y  = fig_pies.data[trace_idx].domain.y
-                fig_pies.data[trace_idx].update(
-                    domain=dict(x=[new_x0, new_x1], y=list(cur_y))
-                )
-
-    # ── Prevent pies from touching the bottom — compress y-domains ─
-    # Reserve a strip at the bottom of each row for the legend annotations
-    # so pies never abut the legend text.
-    PIE_Y_RESERVE = 0.06   # fraction of chart height reserved per row legend
-    for k, trace in enumerate(fig_pies.data):
-        if trace.type == "pie":
-            y0, y1 = trace.domain.y
-            row_span = (1.0 + (NROWS - 1) * VS) / NROWS if NROWS > 0 else 1.0
-            new_y0 = y0 + PIE_Y_RESERVE * row_span
-            trace.update(domain=dict(y=[new_y0, y1]))
-
-    # ── One shared legend per ROW of pies ─────────────────
-    row_h = (1.0 - (NROWS - 1) * VS) / NROWS
-
+    # ── One shared legend per row, centred ────────────────
     SWATCH_W = 0.020
     CHAR_W   = 0.0078
     GAP_W    = 0.018
@@ -578,27 +572,15 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors, lab_name=""):
     TOTAL_LEG_W = sum(item_widths)
 
     for row_i in range(NROWS):
-        # Determine how many valid pies are in this row
-        first_in_row = row_i * NCOLS
-        last_in_row  = min(first_in_row + NCOLS, n) - 1
-        n_in_row     = last_in_row - first_in_row + 1
+        # Bottom of this row's slot (below the PIE_Y_RESERV strip)
+        y_top_row = 1.0 - row_i * (row_h + VS)
+        y_bot_row = y_top_row - row_h          # bottom of the slot
+        y_leg     = y_bot_row - 0.05           # just below the slot edge
 
-        # For the last row when centred, x-centre is 0.5 (full width centred)
-        is_last_centred = (row_i == NROWS - 1 and n_last > 0 and NROWS > 1)
-        if is_last_centred:
-            x_used_ctr = 0.5
-        else:
-            used_width = n_in_row * col_w + (n_in_row - 1) * HS
-            x_used_ctr = used_width / 2
-
-        # Y-bottom of this row in paper coords — extra gap to clear the pie edge
-        row_bottom = 1.0 - (row_i + 1) * row_h - row_i * VS
-        y_leg = row_bottom - 0.075   # increased from 0.045 — clears the compressed pie bottom
-
-        # Start x for the legend block (centred)
-        x_start  = x_used_ctr - TOTAL_LEG_W / 2
+        # Legend always centred at x=0.5 (all rows are horizontally centred)
+        x_start  = 0.5 - TOTAL_LEG_W / 2
         x_cursor = x_start
-        for j, (t, col) in enumerate(zip(types, pie_colors)):
+        for t, col in zip(types, pie_colors):
             fig_pies.add_annotation(
                 x=x_cursor, y=y_leg, text="■",
                 font=dict(color=col, size=14, family="Arial"),
@@ -609,9 +591,8 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors, lab_name=""):
                 font=dict(color="#333", size=10, family="Arial"),
                 xref="paper", yref="paper", showarrow=False, xanchor="left",
             )
-            x_cursor += item_widths[j]
+            x_cursor += _item_width(t)
 
-    # Bottom margin large enough for the last-row annotations
     bottom_margin = max(80, int(len(types) * 18 + 60))
 
     fig_pies.update_layout(
@@ -620,7 +601,7 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors, lab_name=""):
         showlegend=False,
         paper_bgcolor="white",
         font=dict(family="Arial", size=11),
-        margin=dict(t=50, b=bottom_margin, l=10, r=10),
+        margin=dict(t=60, b=bottom_margin, l=10, r=10),
     )
 
     return fig_bar, fig_pies
