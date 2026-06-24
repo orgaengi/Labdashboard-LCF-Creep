@@ -29,7 +29,12 @@ import openpyxl
 # ── Tool-specific config ──────────────────────────────────
 TOOL_TITLE   = "LCF & Creep Lab Dashboard"
 LCF_ALLOWED_TYPES = ["LCF", "Creep"]          # unique name: avoids collision with coating
-OUTPUT_FILE   = "LCF_Creep_Dashboard.xlsx"
+LCF_OUTPUT_FILE = "LCF_Creep_Dashboard.xlsx"   # unique name — module-level
+                                                # OUTPUT_FILE is redefined by
+                                                # Tool 2 and Tool 4 below, which
+                                                # would otherwise silently win
+                                                # at call time (same class of
+                                                # bug as the v13 ALLOWED_TYPES fix)
 
 DEFAULT_CAPS = {
     "LCF":   50,   # 50 samples/year max
@@ -45,7 +50,11 @@ def generate_lcf_creep(input_path, capacities, theme, progress_cb=None):
         if progress_cb: progress_cb(msg)
 
     p("📖 Reading file…")
-    df, col_map, errors, warns = core.load_and_filter(input_path, LCF_ALLOWED_TYPES)
+    paths = input_path if isinstance(input_path, (list, tuple)) else [input_path]
+    if len(paths) > 1:
+        df, col_map, errors, warns = merge_files(paths, allowed_types=LCF_ALLOWED_TYPES)
+    else:
+        df, col_map, errors, warns = core.load_and_filter(paths[0], LCF_ALLOWED_TYPES)
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -83,7 +92,7 @@ def generate_lcf_creep(input_path, capacities, theme, progress_cb=None):
     core.write_gantt_heatmap(wb, weekly_df, types, capacities, years)
 
     p("💾 Saving…")
-    out = core.save_workbook(wb, input_path, OUTPUT_FILE)
+    out = core.save_workbook(wb, paths[0], LCF_OUTPUT_FILE)
     return out, warns
 
 
@@ -119,7 +128,8 @@ from openpyxl.utils import get_column_letter
 # ── Tool-specific config ──────────────────────────────────
 TOOL_TITLE    = "Coating Labs Dashboard (Cold Spray, HVOF, Plasma)"
 COATING_ALLOWED_TYPES = ["Cold Spray", "HVOF", "Plasma"]   # unique name
-OUTPUT_FILE   = "Coating_Labs_Dashboard.xlsx"
+COATING_OUTPUT_FILE = "Coating_Labs_Dashboard.xlsx"   # unique name — see note
+                                                       # above LCF_OUTPUT_FILE
 COMBINED_CAP  = 350   # total samples/year across all 3 coating labs
 
 # Individual capacities for single-lab utilization display
@@ -329,7 +339,11 @@ def generate_coating(input_path, individual_caps, theme, progress_cb=None):
         if progress_cb: progress_cb(msg)
 
     p("📖 Reading file…")
-    df, col_map, errors, warns = core.load_and_filter(input_path, COATING_ALLOWED_TYPES)
+    paths = input_path if isinstance(input_path, (list, tuple)) else [input_path]
+    if len(paths) > 1:
+        df, col_map, errors, warns = merge_files(paths, allowed_types=COATING_ALLOWED_TYPES)
+    else:
+        df, col_map, errors, warns = core.load_and_filter(paths[0], COATING_ALLOWED_TYPES)
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -367,7 +381,7 @@ def generate_coating(input_path, individual_caps, theme, progress_cb=None):
     core.write_gantt_heatmap(wb, weekly_df, types, individual_caps, years)
 
     p("💾 Saving…")
-    out = core.save_workbook(wb, input_path, OUTPUT_FILE)
+    out = core.save_workbook(wb, paths[0], COATING_OUTPUT_FILE)
     return out, warns
 
 
@@ -384,7 +398,7 @@ def generate_coating(input_path, individual_caps, theme, progress_cb=None):
 Tool 3 — Thermal Lab Dashboard
 ================================
 Tracks up to N Thermal Rigs (dynamic — rig names driven by rig_caps dict).
-Default rigs: Thermal Rig 1, Thermal Rig 2, Thermal Rig 3 (200 samples/yr each).
+Default rigs: Thermal Rig 1, Thermal Rig 2, Thermal Rig 3 (20 samples/yr each).
 """
 
 THERMAL_TOOL_TITLE = "Thermal Lab Dashboard"
@@ -399,7 +413,7 @@ def generate_thermal(input_path, rig_caps, theme, progress_cb=None):
     ----------
     input_path  : str   — path to the user's Excel file
     rig_caps    : dict  — {rig_name: annual_capacity}, e.g.
-                          {"Thermal Rig 1": 200, "Thermal Rig 2": 200, ...}
+                          {"Thermal Rig 1": 20, "Thermal Rig 2": 20, ...}
     theme       : dict  — core.COLOR_THEMES entry
     progress_cb : callable or None
     """
@@ -410,7 +424,11 @@ def generate_thermal(input_path, rig_caps, theme, progress_cb=None):
     allowed_types = list(rig_caps.keys())
 
     p("📖 Reading file…")
-    df, col_map, errors, warns = core.load_and_filter(input_path, allowed_types)
+    paths = input_path if isinstance(input_path, (list, tuple)) else [input_path]
+    if len(paths) > 1:
+        df, col_map, errors, warns = merge_files(paths, allowed_types=allowed_types)
+    else:
+        df, col_map, errors, warns = core.load_and_filter(paths[0], allowed_types)
     if errors:
         raise ValueError("\n".join(errors))
 
@@ -448,7 +466,7 @@ def generate_thermal(input_path, rig_caps, theme, progress_cb=None):
     core.write_gantt_heatmap(wb, weekly_df, types, rig_caps, years)
 
     p("💾 Saving…")
-    out = core.save_workbook(wb, input_path, THERMAL_OUTPUT_FILE)
+    out = core.save_workbook(wb, paths[0], THERMAL_OUTPUT_FILE)
     return out, warns
 
 
@@ -488,8 +506,8 @@ GROUP_A = {"name":"Mechanical Labs","types":["LCF","Creep"],
 GROUP_B = {"name":"Coating Labs","types":["Cold Spray","HVOF","Plasma"],
            "caps":{"Cold Spray":140,"HVOF":120,"Plasma":90},"color":"1F5C1A","cap_total":350}
 GROUP_C = {"name":"Thermal Lab","types":["Thermal Rig"],
-           "caps":{"Thermal Rig":200},
-           "color":"7F3F00","cap_total":200}
+           "caps":{"Thermal Rig":20},
+           "color":"7F3F00","cap_total":20}
 ALL_TYPES = GROUP_A["types"] + GROUP_B["types"] + GROUP_C["types"]
 
 
@@ -497,18 +515,24 @@ ALL_TYPES = GROUP_A["types"] + GROUP_B["types"] + GROUP_C["types"]
 #  MULTI-FILE MERGE ENGINE
 # ────────────────────────────────────────────────────────────
 
-def merge_files(file_paths):
+def merge_files(file_paths, allowed_types=None):
     """
     Load >=1 Excel files using the smart parser (core.load_and_filter), normalise,
     and merge into a single long-format DataFrame.
     Duplicate Year+Type rows across files are SUMMED.
 
-    Uses ALL_TYPES as the allowed-type universe so any of LCF, Creep,
-    Cold Spray, HVOF, Plasma, Thermal Rig data is accepted from any file —
-    including messy/monthly-block formats handled by load_and_filter.
+    allowed_types restricts which lab types are accepted from each file —
+    pass a tool's own type list (e.g. ["LCF","Creep"]) so that tool only
+    ever looks at its own assigned task, even if a file happens to contain
+    other lab types' data too. Defaults to ALL_TYPES (the original Tool 4
+    behaviour, which needs to recognise any of the 6 lab types from any
+    file — including messy/monthly-block formats handled by load_and_filter).
 
     Returns: (merged_df, col_map, errors, file_log)
     """
+    if allowed_types is None:
+        allowed_types = ALL_TYPES
+
     frames = []
     errors = []
     file_log = []   # one line per file for the Data_Sources sheet
@@ -516,7 +540,7 @@ def merge_files(file_paths):
     for path in file_paths:
         fname = os.path.basename(path)
         try:
-            df_loaded, col_map, errs_l, warns_l = core.load_and_filter(path, ALL_TYPES)
+            df_loaded, col_map, errs_l, warns_l = core.load_and_filter(path, allowed_types)
         except Exception as e:
             errors.append(f"Cannot process '{fname}': {e}")
             continue
@@ -541,8 +565,8 @@ def merge_files(file_paths):
         df["Year"]  = df["Year"].astype(int)
         df["Type"]  = df["Type"].astype(str).str.strip()
 
-        # Normalise type names (case-insensitive) to canonical ALL_TYPES spelling
-        known = {t.lower(): t for t in ALL_TYPES}
+        # Normalise type names (case-insensitive) to canonical spelling
+        known = {t.lower(): t for t in allowed_types}
         df["Type"] = df["Type"].apply(lambda x: known.get(x.lower(), x))
 
         rows_kept = len(df)
@@ -568,7 +592,7 @@ def merge_files(file_paths):
     merged = merged.groupby(["Year","Type"], as_index=False)["Value"].sum()
 
     found   = set(merged["Type"].unique())
-    missing = set(ALL_TYPES) - found
+    missing = set(allowed_types) - found
     if missing:
         file_log.append(f"WARNING: Lab types not found in any file: {sorted(missing)}")
 

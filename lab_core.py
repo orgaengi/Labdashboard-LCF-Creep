@@ -332,8 +332,14 @@ def _is_monthly_block_format(path):
     except Exception:
         return False, None, []
 
-    YEAR_RE = _re.compile(r'^(20\d{2})$')
-    year_sheets = [s for s in xl.sheet_names if YEAR_RE.match(str(s).strip())]
+    # Sheet names are expected to represent a year, but real-world workbooks
+    # often label them "YEAR 2024", "FY 2024", "2024 Data", etc. rather than
+    # a bare "2024". Search for a 20xx year ANYWHERE in the name instead of
+    # requiring the whole name to be exactly 4 digits — this was the cause
+    # of "No valid rows after removing nulls" for files using a "YEAR "
+    # prefix even though the underlying block data was perfectly valid.
+    YEAR_RE = _re.compile(r'(20\d{2})')
+    year_sheets = [s for s in xl.sheet_names if YEAR_RE.search(str(s).strip())]
     if not year_sheets:
         return False, xl, []
 
@@ -367,13 +373,15 @@ def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
     """
     warns = []
     monthly_rows = []   # one row per month per year
+    import re as _re
+    _YEAR_EXTRACT = _re.compile(r'(20\d{2})')
 
     for sheet in year_sheets:
-        try:
-            year = int(str(sheet).strip())
-        except ValueError:
+        m = _YEAR_EXTRACT.search(str(sheet).strip())
+        if not m:
             warns.append(f"Sheet '{sheet}' skipped — name is not a valid year.")
             continue
+        year = int(m.group(1))
 
         try:
             raw = pd.read_excel(xl, sheet_name=sheet, header=None)
@@ -1147,12 +1155,45 @@ def write_gantt_current_year(wb, weekly_df, types, capacities,
 
 
 def write_gantt_all_years(wb, weekly_df, types, capacities, years):
-    """Gantt with ░▒ symbols for all years — matches reference model."""
+    """
+    Lab occupancy Gantt — one continuous colour-banded row per lab type per
+    year. Previously this used ▒/░ symbols over 3 states; it's now flat
+    solid-colour blocks across 4 states (vacant/within/near/over capacity),
+    matching the Streamlit Gantt tab's redesign, so adjoining same-status
+    weeks read as one unbroken bar segment instead of a symbol-marked grid.
+    The current week (if 'years' includes the current year) gets a bold
+    border down its whole column as a period-highlight marker.
+    """
     ws = wb.create_sheet("Gantt_Chart")
-    banner(ws, 1, "Lab Occupancy Gantt — Busy Periods (≥ 80% Utilization) by Week", cols=55)
+    banner(ws, 1, "Lab Occupancy Gantt — One Bar per Lab Type, by Week", cols=55)
+
+    GREY, GREEN, YELLOW, RED = "D9D9D9", "70AD47", "FFD700", "FF4444"
+
+    # Legend — placed near the top (mirrors the reference template, where
+    # the legend sits right under the title rather than at the bottom).
+    # Each item gets a merge span sized to its label length — the week
+    # columns are only 1.8 units wide, far too narrow for text like
+    # "Over capacity — beyond plan" to fit in just 2-3 of them.
+    LR = 2
+    ws.cell(LR, 1, "Legend:").font = Font(bold=True, size=9, name="Arial")
+    legend_items = [
+        ("Vacant",                        GREY,   "666666", 6),
+        ("Within capacity",                GREEN,  "FFFFFF", 9),
+        ("Near capacity (80–100%)",        YELLOW, "333333", 13),
+        ("Over capacity — beyond plan",    RED,    "FFFFFF", 17),
+    ]
+    col = 3
+    for lbl, bg, fg, span in legend_items:
+        c = ws.cell(LR, col, lbl)
+        c.fill = PatternFill("solid", start_color=bg)
+        c.font = Font(name="Arial", size=8, bold=True, color=fg)
+        c.alignment = Alignment(horizontal="center")
+        ws.merge_cells(start_row=LR, start_column=col,
+                       end_row=LR, end_column=col + span - 1)
+        col += span + 1  # +1 leaves a 1-column gap between legend items
 
     # Quarter header row
-    QR = 2
+    QR = 3
     for label, sc, ec in [("Q1",3,15),("Q2",16,28),("Q3",29,41),("Q4",42,54)]:
         ws.merge_cells(start_row=QR, start_column=sc, end_row=QR, end_column=ec)
         c = ws.cell(QR, sc, label)
@@ -1160,9 +1201,15 @@ def write_gantt_all_years(wb, weekly_df, types, capacities, years):
         c.fill = PatternFill("solid", start_color="2E75B6")
         c.alignment = Alignment(horizontal="center")
 
-    HR = 3
+    HR = 4
     hdr(ws.cell(HR,1,"Lab Type"), bg="1F3864", sz=9); cw(ws,1,14)
     hdr(ws.cell(HR,2,"Year"),     bg="1F3864", sz=9); cw(ws,2,7)
+
+    # Mark the current week's column as the period-highlight, if the
+    # current year is among the years being charted.
+    highlight_week = CURRENT_WEEK if CURRENT_YEAR in [int(y) for y in years] else None
+    thick = Side(style="thick", color="C55A11")
+
     for w in range(1,53):
         c = ws.cell(HR, w+2, w)
         c.font = Font(bold=True, size=7, name="Arial", color="FFFFFF")
@@ -1186,35 +1233,30 @@ def write_gantt_all_years(wb, weekly_df, types, capacities, years):
                 dem  = float(wrow[t].values[0]) if not wrow.empty else 0.0
                 util = dem/cap_wk if cap_wk>0 else 0.0
                 cell = ws.cell(ri, w+2)
-                cell.border = bdr("EEEEEE")
                 cell.alignment = Alignment(horizontal="center")
-                if util >= 1.0:
-                    cell.value = "▒"; cell.fill = PatternFill("solid",start_color="FF4444")
-                    cell.font = Font(size=7, name="Arial", color="FFFFFF", bold=True)
+                if util > 1.0:
+                    bg = RED
                 elif util >= 0.8:
-                    cell.value = "░"; cell.fill = PatternFill("solid",start_color="FFD700")
-                    cell.font = Font(size=7, name="Arial", color="333333")
+                    bg = YELLOW
+                elif util >= 0.05:
+                    bg = GREEN
                 else:
-                    cell.value = None
-                    cell.fill = PatternFill("solid",start_color="F7F7F7")
+                    bg = GREY
+                cell.fill = PatternFill("solid", start_color=bg)
+                # Period-highlight column: thick orange border, this
+                # year's row only, instead of a value/symbol — keeps the
+                # bar's colour banding undisturbed while still marking it.
+                if highlight_week == w and year == CURRENT_YEAR:
+                    cell.border = Border(left=thick, right=thick, top=thick, bottom=thick)
+                else:
+                    cell.border = bdr("EEEEEE")
             ws.row_dimensions[ri].height = 12
             ri += 1
         # blank row between lab types
         ws.row_dimensions[ri].height = 6
         ri += 1
 
-    # Legend
-    leg = ri + 1
-    for i,(lbl,bg,fg) in enumerate([
-        ("▒  Overloaded > 100%",     "FF4444","FFFFFF"),
-        ("░  Near Capacity 80–100%", "FFD700","333333"),
-        ("   Active < 80%",           "F7F7F7","666666"),
-    ]):
-        c = ws.cell(leg+i, 1, lbl)
-        c.fill=PatternFill("solid",start_color=bg)
-        c.font=Font(name="Arial",size=9,bold=True,color=fg)
-        c.border=bdr()
-    ws.freeze_panes = "C4"
+    ws.freeze_panes = "C5"
 
 
 def write_gantt_heatmap(wb, weekly_df, types, capacities, years):

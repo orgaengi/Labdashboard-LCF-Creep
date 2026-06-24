@@ -21,7 +21,7 @@ from plotly.subplots import make_subplots
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lab_core as core
 import generators as gen_module
-from generators import merge_files, GROUP_A, GROUP_B, GROUP_C
+from generators import merge_files, GROUP_A, GROUP_B, GROUP_C, ALL_TYPES
 
 # ──────────────────────────────────────────────────────────
 #  PAGE CONFIG
@@ -208,6 +208,28 @@ def load_uploaded_files(uploaded_files, allowed_types=None):
     return paths
 
 
+def _uploader_key(base_key):
+    """
+    Return a versioned widget key for a file_uploader.
+
+    Streamlit's file_uploader keeps its uploaded files tied to its `key`
+    across script reruns — clicking a "Remove" button that only clears our
+    own session_state cache does nothing, because on the very next rerun
+    the widget (same key) hands back the same files and they get re-cached
+    immediately. The standard fix is to change the widget's key, which
+    makes Streamlit treat it as a brand-new, empty widget instance.
+    """
+    v = st.session_state.get(f"{base_key}_v", 0)
+    return f"{base_key}_{v}"
+
+
+def _reset_uploader(base_key, cache_key):
+    """Bump a file_uploader's key version and clear its cached files — call
+    this from a 'Remove file(s)' button instead of just clearing cache_key."""
+    st.session_state[f"{base_key}_v"] = st.session_state.get(f"{base_key}_v", 0) + 1
+    st.session_state[cache_key] = None
+
+
 def _persist_upload(cache_key, file_obj):
     """
     Cache an uploaded file's bytes in session_state so it survives
@@ -248,10 +270,19 @@ def _show_file_diagnostics(path, expected_types):
             st.markdown(f"**Expected lab types:** `{expected_types}`")
             st.markdown("**First 8 rows of data:**")
             st.dataframe(raw, use_container_width=True)
-            st.markdown("**💡 Tip:** Each tool needs specific lab types in a `Type` column:")
+            st.markdown("**💡 Tip:** This tool will accept your data in any of these layouts — "
+                        "no need to reshape it to match exactly:")
+            st.markdown("- A long-format file with a `Type` column listing one of the types below "
+                        "(plus a Year/Date and a value column)")
+            st.markdown("- A monthly-block file (one sheet per year, no `Type` column needed at all — "
+                        "the whole file is assumed to be the one type this tool expects)")
+            st.markdown("- A wide format with one column per type")
+            st.markdown("This tool's expected type(s):")
             st.markdown("- 🔵 Tool 1 → `LCF`, `Creep`")
             st.markdown("- 🟢 Tool 2 → `Cold Spray`, `HVOF`, `Plasma`")
             st.markdown("- 🟠 Tool 3 → `Thermal Rig`")
+            st.markdown("If you're seeing this, the file structure above genuinely didn't match any "
+                        "of these — check the sheet names and column layout against the raw rows shown above.")
     except Exception as e:
         st.warning(f"Could not read file for diagnostics: {e}")
 
@@ -305,6 +336,92 @@ def _detect_and_maybe_select_type(path, allowed_types, tool_key):
         key=key,
     )
     return [chosen]
+
+
+def _load_multi_files(paths, allowed_types, tool_key):
+    """
+    Load and merge 1+ uploaded files for a single tool, restricted to that
+    tool's own allowed_types ('only look at the assigned task for this
+    tool', even if a file happens to contain other lab types' rows).
+
+    Each file is independently run through the full smart parser
+    (core.load_and_filter) — long format, wide format, messy/junk headers,
+    data on any sheet, or the monthly-block format (year-named sheets with
+    TOTAL SAMPLES REMOVED rows). This means any of those layouts can be
+    mixed across files for the same tool.
+
+    Monthly-block files carry no Type column, so if a tool has more than
+    one allowed type (e.g. Tool 1 = LCF + Creep) and the filename doesn't
+    give away which type a given file represents, the user is asked once
+    per file via a selectbox (reusing _detect_and_maybe_select_type) —
+    this lets one monthly-block file per lab type be uploaded together and
+    merged, instead of forcing everything into a single file.
+
+    Duplicate Year+Type rows across files are summed.
+
+    Returns (merged_df, col_map, errors, file_log) — same shape as
+    generators.merge_files, so callers can treat single- and multi-file
+    uploads identically.
+    """
+    frames = []
+    file_log = []
+    errors = []
+
+    for i, path in enumerate(paths):
+        fname = os.path.basename(path)
+        file_types = _detect_and_maybe_select_type(path, allowed_types, f"{tool_key}_{i}")
+        try:
+            df_loaded, col_map, errs_l, warns_l = core.load_and_filter(path, file_types)
+        except Exception as e:
+            file_log.append(f"ERROR processing '{fname}': {e}")
+            continue
+
+        if errs_l:
+            file_log.append(f"SKIPPED ({'; '.join(errs_l)}): {fname}")
+            continue
+        if df_loaded is None or df_loaded.empty:
+            file_log.append(f"SKIPPED (empty/no matching types): {fname}")
+            continue
+
+        yc = col_map.get("year", "Year")
+        tc = col_map.get("type", "Type")
+        vc = col_map.get("value", "Value")
+        df = df_loaded[[yc, tc, vc]].copy()
+        df.columns = ["Year", "Type", "Value"]
+        df["Value"] = pd.to_numeric(df["Value"], errors="coerce").fillna(0)
+        df["Year"]  = pd.to_numeric(df["Year"], errors="coerce")
+        df = df.dropna(subset=["Year", "Type", "Value"])
+        df["Year"]  = df["Year"].astype(int)
+        df["Type"]  = df["Type"].astype(str).str.strip()
+
+        known = {t.lower(): t for t in allowed_types}
+        df["Type"] = df["Type"].apply(lambda x: known.get(x.lower(), x))
+
+        rows_kept = len(df)
+        if rows_kept == 0:
+            file_log.append(f"SKIPPED (no usable rows): {fname}")
+            continue
+
+        frames.append(df)
+        log_line = f"OK ({rows_kept} rows): {fname}"
+        if warns_l:
+            log_line += f"  [{'; '.join(warns_l)}]"
+        file_log.append(log_line)
+
+    if not frames:
+        errors.append("No valid data found in any uploaded file.")
+        return None, {}, errors, file_log
+
+    merged = pd.concat(frames, ignore_index=True)
+    merged = merged.groupby(["Year", "Type"], as_index=False)["Value"].sum()
+
+    found   = set(merged["Type"].unique())
+    missing = set(allowed_types) - found
+    if missing:
+        file_log.append(f"WARNING: Lab types not found in any file: {sorted(missing)}")
+
+    col_map_out = {"year": "Year", "type": "Type", "value": "Value"}
+    return merged, col_map_out, errors, file_log
 
 def get_annual_totals(weekly_df, types, years):
     """Return dict {year: {type: annual_total}}."""
@@ -487,11 +604,16 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
     bar_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6","#C6EFCE"]
 
     # ── Demand bars per year ──────────────────────────────
-    n_types = len(types)
-    # Same width formula as chart_yoy_bar_and_pie — keeps single-type
-    # charts (Tool 3 / Tool 4 Thermal) visually consistent with Tool 1/2
-    bar_w = max(0.15, min(0.5, 0.6 / max(n_types, 2)))
-
+    # A manually-computed bar width (previous approach) turned out fragile:
+    # it could be tuned to look right for one combination of category count
+    # and year count, but kept breaking for others (verified: my last fix
+    # solved the 6-year/2-type case but still left 1-type/3-year bars
+    # touching edge-to-edge). The robust fix is to NOT set an explicit
+    # width at all and instead let Plotly size bars itself — that's what
+    # bargroupgap (gap between bars sharing one x-category, set below in
+    # update_layout) is actually designed for, and it scales correctly
+    # regardless of how many years or lab types are loaded (tested with
+    # 1–3 types and 2–8 years).
     demand_vals = []
     for yi, year in enumerate(years):
         yd   = weekly_df[weekly_df["Year"] == year]
@@ -504,7 +626,6 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
             text=[f"{v:.2f}" for v in avgs],
             textposition="outside",
             textfont=dict(size=9),
-            width=bar_w,
         ))
 
     # ── Capacity: scatter markers (▬) at cap level per type ──
@@ -542,6 +663,11 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
         legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
         margin=dict(b=100, t=60, r=20),
         uniformtext=dict(minsize=8, mode="hide"),
+        # bargap = gap between different Lab Type categories.
+        # bargroupgap = gap between bars sharing the SAME category (i.e.
+        # between years) — this is the one that actually fixes oversized/
+        # touching bars, and was previously set far too low (0.05).
+        bargap=0.15, bargroupgap=0.2,
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
@@ -604,72 +730,103 @@ def chart_utilization_line(util_df, types, years, colors):
     return fig
 
 
-def chart_gantt(weekly_df, types, capacities, year, current_week):
-    """Gantt heatmap for a given year."""
+def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week=None):
+    """
+    Lab occupancy Gantt — one continuous horizontal bar per lab type for the
+    selected year.
+
+    Previously this was a smooth red/yellow/green utilization GRADIENT
+    (a heatmap). Per the chosen redesign, it's now banded into four flat
+    colour states (vacant / within capacity / near capacity / over
+    capacity) with hard cutoffs instead of a gradient — adjacent weeks in
+    the same state then render as one unbroken block of colour, so each
+    row reads as a single annotated bar (like the reference Gantt template)
+    rather than a heatmap. A highlighted vertical band marks either the
+    current week (when viewing the current year) or a chosen
+    highlight_week, mirroring the reference template's "Period Highlight"
+    column.
+    """
     weeks = list(range(1, 53))
     yd    = weekly_df[weekly_df["Year"] == year]
 
+    GREY, GREEN, YELLOW, RED = "#D9D9D9", "#70AD47", "#FFD700", "#FF4444"
+
     z, labels, text_grid = [], [], []
-    for i, t in enumerate(types):
+    for t in types:
         cap_wk = capacities.get(t, 1) / 52
         row_z, row_txt = [], []
         for w in weeks:
             wrow = yd[yd["Week"] == w]
             dem  = float(wrow[t].values[0]) if not wrow.empty else 0.0
             util = dem / cap_wk if cap_wk > 0 else 0.0
-            # clamp to [0, 1.5] for display but store raw for tooltip
             row_z.append(round(min(util, 1.5), 3))
-            row_txt.append(f"Week {w} | {t}<br>Demand: {dem:.2f}<br>Util: {util:.1%}")
+            status = ("Over capacity" if util > 1.0 else
+                      "Near capacity" if util >= 0.8 else
+                      "Within capacity" if util >= 0.05 else
+                      "Vacant")
+            row_txt.append(f"Week {w} | {t}<br>Demand: {dem:.2f}<br>"
+                            f"Util: {util:.1%}<br>{status}")
         z.append(row_z)
         labels.append(t)
         text_grid.append(row_txt)
 
-    # Colorscale values MUST be 0.0–1.0 (plotly requirement)
-    # Map: 0→green, 0.53→yellow (=80% of 1.5 scale), 0.67→red (=100%), 1.0→dark red
+    # Discrete colour BANDS rather than a gradient — duplicate stops at
+    # each threshold create a hard cutoff instead of a blend, which is
+    # what makes same-status weeks visually merge into one bar segment.
+    VACANT_T, NEAR_T, OVER_T = 0.05/1.5, 0.80/1.5, 1.00/1.5
     colorscale = [
-        [0.00, "#C6EFCE"],   # 0% util → light green
-        [0.40, "#70AD47"],   # ~60% util → green
-        [0.53, "#FFD700"],   # ~80% util → yellow
-        [0.67, "#FF4444"],   # ~100% util → red
-        [1.00, "#CC0000"],   # ≥150% util → dark red
+        [0.0,      GREY],   [VACANT_T, GREY],
+        [VACANT_T, GREEN],  [NEAR_T,   GREEN],
+        [NEAR_T,   YELLOW], [OVER_T,   YELLOW],
+        [OVER_T,   RED],    [1.0,      RED],
     ]
 
     fig = go.Figure(go.Heatmap(
-        z=z,
-        x=[f"Wk{w}" for w in weeks],
-        y=labels,
-        colorscale=colorscale,
-        zmin=0, zmax=1.5,
-        text=text_grid,
-        hovertemplate="%{text}<extra></extra>",
-        colorbar=dict(
-            title=dict(text="Utilization", side="right"),
-            tickvals=[0, 0.4, 0.8, 1.0, 1.5],
-            ticktext=["0%", "40%", "80%", "100%", "≥150%"],
-            len=0.8,
-        ),
-        showscale=True,
+        z=z, x=[f"Wk{w}" for w in weeks], y=labels,
+        colorscale=colorscale, zmin=0, zmax=1.5,
+        text=text_grid, hovertemplate="%{text}<extra></extra>",
+        showscale=False,
+        xgap=0, ygap=4,   # ygap visually separates each lab type's bar
     ))
 
-    # Mark current week
-    if year == CURRENT_YEAR and 1 <= current_week <= 52:
-        fig.add_vline(
-            x=current_week - 1,          # vline on x-axis uses index not label
-            line_color="#C00000", line_width=2, line_dash="dash",
-            annotation_text=f"Wk {current_week} (Now)",
-            annotation_position="top right",
-            annotation_font_size=10,
+    # Categorical legend — Heatmap traces have no native discrete legend,
+    # so this adds invisible marker traces purely to produce swatch+label
+    # legend entries (standard Plotly idiom), matching the reference
+    # template's legend row.
+    for name, color in [("Vacant", GREY), ("Within capacity", GREEN),
+                         ("Near capacity (80–100%)", YELLOW),
+                         ("Over capacity — beyond plan", RED)]:
+        fig.add_trace(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(size=11, color=color, symbol="square"),
+            name=name, showlegend=True, hoverinfo="skip",
+        ))
+
+    # Period-highlight band (defaults to current week if viewing the
+    # current year) — mirrors the reference template's "Period Highlight"
+    # selector + tan vertical band.
+    hl_week = highlight_week if highlight_week else (current_week if year == CURRENT_YEAR else None)
+    if hl_week and 1 <= hl_week <= 52:
+        fig.add_vrect(
+            x0=hl_week - 1.5, x1=hl_week - 0.5,
+            fillcolor="#F4B183", opacity=0.4, line_width=0, layer="above",
+        )
+        fig.add_annotation(
+            x=hl_week - 1, y=1.08, yref="paper", xref="x",
+            text=f"Period Highlight: Wk {hl_week}", showarrow=False,
+            font=dict(size=10, color="#C55A11", family="Arial"),
         )
 
     fig.update_layout(
-        title=f"Gantt Heatmap — {year} Weekly Occupancy",
+        title=f"Lab Occupancy Gantt — {year}",
         xaxis_title="Week",
         yaxis_title="Lab Type",
-        height=max(280, 90 * len(types) + 140),
+        height=max(280, 70 * len(types) + 170),
         font=dict(family="Arial", size=11),
         paper_bgcolor="white",
         plot_bgcolor="white",
-        margin=dict(l=110, r=80, t=60, b=60),
+        margin=dict(l=110, r=40, t=90, b=70),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.32, x=0),
     )
     return fig
 
@@ -699,11 +856,24 @@ def chart_comparison_grouped(annual_a, annual_b, types_a, types_b, years,
                              text=[f"{v:.0f}" for v in vals],
                              textposition="outside"), row=1, col=2)
 
-    # Capacity reference lines
-    fig.add_hline(y=cap_a_total, line_dash="dot", line_color="#1A4E8A",
-                  annotation_text=f"Cap A: {cap_a_total}", row=1, col=1)
-    fig.add_hline(y=cap_b_total, line_dash="dot", line_color="#1F5C1A",
-                  annotation_text=f"Cap B: {cap_b_total}", row=1, col=2)
+    # Capacity reference lines + corner badges (see chart_comparison_3groups
+    # for why these are pinned to fixed paper-domain corners rather than
+    # attached to the line itself — avoids overlap with bar value labels).
+    def _cap_badge(row, col, cap_val, color, label):
+        fig.add_hline(y=cap_val, line_dash="dot", line_color=color, row=row, col=col)
+        fig.add_annotation(
+            text=f"{label}: {cap_val:.0f}/yr",
+            xref="x domain", yref="y domain",
+            x=0.02, y=0.97, xanchor="left", yanchor="top",
+            showarrow=False,
+            font=dict(size=10, color=color),
+            bgcolor="rgba(255,255,255,0.88)",
+            bordercolor=color, borderwidth=1, borderpad=3,
+            row=row, col=col,
+        )
+
+    _cap_badge(1, 1, cap_a_total, "#1A4E8A", "Cap A")
+    _cap_badge(1, 2, cap_b_total, "#1F5C1A", "Cap B")
 
     fig.update_layout(barmode="group", height=440,
                       font=dict(family="Arial", size=12),
@@ -829,6 +999,21 @@ def show_util_table(util_df, types, years):
         df_display.style.map(color_util, subset=[c for c in df_display.columns if c != "Lab Type"]),
         use_container_width=True, hide_index=True,
     )
+    st.markdown("""
+    <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap;
+                margin:4px 0 14px 2px;font-size:12px;color:#444;">
+        <span style="font-weight:600;color:#666;">Legend:</span>
+        <span><span style="display:inline-block;width:12px;height:12px;
+              background:#CCEFCC;border:1px solid #8FBF8F;border-radius:2px;
+              margin-right:5px;vertical-align:middle;"></span>Under 80% — within capacity</span>
+        <span><span style="display:inline-block;width:12px;height:12px;
+              background:#FFF3CC;border:1px solid #D8C27A;border-radius:2px;
+              margin-right:5px;vertical-align:middle;"></span>80–100% — near capacity</span>
+        <span><span style="display:inline-block;width:12px;height:12px;
+              background:#FFCCCC;border:1px solid #E08A8A;border-radius:2px;
+              margin-right:5px;vertical-align:middle;"></span>Over 100% — over capacity</span>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def show_annual_summary_table(annual_totals, types, years, capacities):
@@ -1320,15 +1505,21 @@ if "Tool 1" in tool:
     # ── Config ────────────────────────────────────────────
     col_a, col_b, col_c = st.columns([2, 1, 1])
     with col_a:
-        st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
-        uploaded = st.file_uploader("", type=["xlsx","xls"], key="t1_file",
-                                    label_visibility="collapsed")
-        fc1 = _persist_upload("_fc_t1", uploaded)
-        if fc1 and uploaded is None:
-            st.success(f"✅ {fc1['name']} loaded")
-        if fc1:
-            if st.button("✖ Remove file", key="t1_remove"):
-                st.session_state["_fc_t1"] = None
+        st.markdown('<div class="section-label">📂 Upload Excel File(s)</div>', unsafe_allow_html=True)
+        uploaded_1 = st.file_uploader(
+            "", type=["xlsx", "xls"], key=_uploader_key("t1_file"),
+            accept_multiple_files=True, label_visibility="collapsed",
+            help="Upload one combined file, or one file per lab type (e.g. one "
+                 "monthly-block file for LCF and another for Creep) — they'll be merged.",
+        )
+        fc1_list = _persist_upload_multi("_fc_t1", uploaded_1 or [])
+        if fc1_list and not uploaded_1:
+            st.success(f"✅ {len(fc1_list)} file(s) loaded: {', '.join(f['name'] for f in fc1_list)}")
+        elif uploaded_1:
+            st.success(f"✅ {len(uploaded_1)} file(s) loaded: {', '.join(f.name for f in uploaded_1)}")
+        if fc1_list:
+            if st.button("✖ Remove file(s)", key="t1_remove"):
+                _reset_uploader("t1_file", "_fc_t1")
                 st.rerun()
     with col_b:
         st.markdown('<div class="section-label">LCF Capacity</div>', unsafe_allow_html=True)
@@ -1345,11 +1536,10 @@ if "Tool 1" in tool:
     caps_1 = {"LCF": lcf_cap, "Creep": creep_cap}
     theme_1 = core.COLOR_THEMES[theme_name]
 
-    if fc1:
-        paths_1 = [_bytes_to_tmp(fc1["bytes"])]
+    if fc1_list:
+        paths_1 = [_bytes_to_tmp(f["bytes"], original_name=f["name"]) for f in fc1_list]
         try:
-            _types_1 = _detect_and_maybe_select_type(paths_1[0], ["LCF","Creep"], "t1")
-            df_1, col_map_1, err_1, warn_1 = core.load_and_filter(paths_1[0], _types_1)
+            df_1, col_map_1, err_1, warn_1 = _load_multi_files(paths_1, ["LCF","Creep"], "t1")
         except Exception as _ex:
             import traceback as _tb
             st.error(f"❌ File processing failed: {_ex}")
@@ -1362,8 +1552,13 @@ if "Tool 1" in tool:
         elif df_1 is None:
             pass
         else:
-            if warn_1:
-                for w in warn_1: st.warning(w)
+            for log_line in warn_1:
+                if log_line.startswith("OK"):
+                    st.success(log_line)
+                elif "WARNING" in log_line:
+                    st.warning(log_line)
+                elif log_line.startswith("SKIPPED") or log_line.startswith("ERROR"):
+                    st.warning(log_line)
 
             wdf_1, udf_1, types_1, years_1 = core.build_weekly(df_1, col_map_1, caps_1)
             annual_1 = get_annual_totals(wdf_1, types_1, years_1)
@@ -1404,7 +1599,11 @@ if "Tool 1" in tool:
             with tabs[3]:
                 gantt_year = CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_1] else int(max(years_1))
                 gantt_week = CURRENT_WEEK if gantt_year == CURRENT_YEAR else 52
-                fig_gantt = chart_gantt(wdf_1, types_1, caps_1, gantt_year, gantt_week)
+                hl_default = gantt_week if gantt_year == CURRENT_YEAR else 1
+                hl_week_1 = st.selectbox("Period Highlight (week)", list(range(1, 53)),
+                                          index=hl_default - 1, key="t1_gantt_hl")
+                fig_gantt = chart_gantt(wdf_1, types_1, caps_1, gantt_year, gantt_week,
+                                         highlight_week=hl_week_1)
                 st.plotly_chart(fig_gantt, use_container_width=True)
 
             with tabs[4]:
@@ -1430,7 +1629,7 @@ if "Tool 1" in tool:
             st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>', unsafe_allow_html=True)
             if st.button("⚡ Generate Full Excel Dashboard", key="t1_gen"):
                 with st.spinner("Generating Excel dashboard..."):
-                    out1, warns = gen_module.generate_lcf_creep(paths_1[0], caps_1, theme_1)
+                    out1, warns = gen_module.generate_lcf_creep(paths_1, caps_1, theme_1)
                     with open(out1, 'rb') as f: excel_bytes = f.read()
                 st.download_button(
                     "⬇️ Download LCF_Creep_Dashboard.xlsx",
@@ -1440,7 +1639,8 @@ if "Tool 1" in tool:
                 )
                 st.success("✅ Dashboard ready! Click the button above to download.")
     else:
-        st.info("👆 Upload an Excel file to begin. The file should contain LCF and/or Creep data.")
+        st.info("👆 Upload one or more Excel files to begin. Files should contain LCF and/or Creep data — "
+                "any layout works (long, wide, messy headers, or one monthly-block file per type).")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1456,15 +1656,21 @@ elif "Tool 2" in tool:
     """, unsafe_allow_html=True)
 
     # ── File upload ───────────────────────────────────────
-    st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
-    uploaded_2 = st.file_uploader("", type=["xlsx","xls"], key="t2_file",
-                                   label_visibility="collapsed")
-    fc2 = _persist_upload("_fc_t2", uploaded_2)
-    if fc2 and uploaded_2 is None:
-        st.success(f"✅ {fc2['name']} loaded")
-    if fc2:
-        if st.button("✖ Remove file", key="t2_remove"):
-            st.session_state["_fc_t2"] = None
+    st.markdown('<div class="section-label">📂 Upload Excel File(s)</div>', unsafe_allow_html=True)
+    uploaded_2 = st.file_uploader(
+        "", type=["xlsx", "xls"], key=_uploader_key("t2_file"),
+        accept_multiple_files=True, label_visibility="collapsed",
+        help="Upload one combined file, or one file per lab type (e.g. separate "
+             "monthly-block files for Cold Spray, HVOF, Plasma) — they'll be merged.",
+    )
+    fc2_list = _persist_upload_multi("_fc_t2", uploaded_2 or [])
+    if fc2_list and not uploaded_2:
+        st.success(f"✅ {len(fc2_list)} file(s) loaded: {', '.join(f['name'] for f in fc2_list)}")
+    elif uploaded_2:
+        st.success(f"✅ {len(uploaded_2)} file(s) loaded: {', '.join(f.name for f in uploaded_2)}")
+    if fc2_list:
+        if st.button("✖ Remove file(s)", key="t2_remove"):
+            _reset_uploader("t2_file", "_fc_t2")
             st.rerun()
 
     # ── Capacity config ───────────────────────────────────
@@ -1487,12 +1693,11 @@ elif "Tool 2" in tool:
     theme_name_2 = st.selectbox("Color Theme", list(core.COLOR_THEMES.keys()), key="t2_theme")
     theme_2 = core.COLOR_THEMES[theme_name_2]
 
-    if fc2:
+    if fc2_list:
         COATING_TYPES = ["Cold Spray", "HVOF", "Plasma"]
-        paths_2 = [_bytes_to_tmp(fc2["bytes"])]
+        paths_2 = [_bytes_to_tmp(f["bytes"], original_name=f["name"]) for f in fc2_list]
         try:
-            _types_2 = _detect_and_maybe_select_type(paths_2[0], COATING_TYPES, "t2")
-            df_2, col_map_2, err_2, warn_2 = core.load_and_filter(paths_2[0], _types_2)
+            df_2, col_map_2, err_2, warn_2 = _load_multi_files(paths_2, COATING_TYPES, "t2")
         except Exception as _ex:
             import traceback as _tb
             st.error(f"❌ File processing failed: {_ex}")
@@ -1505,8 +1710,13 @@ elif "Tool 2" in tool:
         elif df_2 is None:
             pass
         else:
-            if warn_2:
-                for w in warn_2: st.warning(w)
+            for log_line in warn_2:
+                if log_line.startswith("OK"):
+                    st.success(log_line)
+                elif "WARNING" in log_line:
+                    st.warning(log_line)
+                elif log_line.startswith("SKIPPED") or log_line.startswith("ERROR"):
+                    st.warning(log_line)
 
             wdf_2, udf_2, types_2, years_2 = core.build_weekly(df_2, col_map_2, ind_caps_2)
             annual_2 = get_annual_totals(wdf_2, types_2, years_2)
@@ -1579,7 +1789,11 @@ elif "Tool 2" in tool:
             with tabs2[3]:
                 gantt_year2 = CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_2] else int(max(years_2))
                 gantt_week2 = CURRENT_WEEK if gantt_year2 == CURRENT_YEAR else 52
-                fig_g2 = chart_gantt(wdf_2, types_2, ind_caps_2, gantt_year2, gantt_week2)
+                hl_default2 = gantt_week2 if gantt_year2 == CURRENT_YEAR else 1
+                hl_week_2 = st.selectbox("Period Highlight (week)", list(range(1, 53)),
+                                          index=hl_default2 - 1, key="t2_gantt_hl")
+                fig_g2 = chart_gantt(wdf_2, types_2, ind_caps_2, gantt_year2, gantt_week2,
+                                      highlight_week=hl_week_2)
                 st.plotly_chart(fig_g2, use_container_width=True)
 
             with tabs2[4]:
@@ -1603,7 +1817,7 @@ elif "Tool 2" in tool:
             st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>', unsafe_allow_html=True)
             if st.button("⚡ Generate Full Excel Dashboard", key="t2_gen"):
                 with st.spinner("Generating..."):
-                    out2, warns2 = gen_module.generate_coating(paths_2[0], ind_caps_2, theme_2)
+                    out2, warns2 = gen_module.generate_coating(paths_2, ind_caps_2, theme_2)
                     with open(out2, 'rb') as f: excel_bytes2 = f.read()
                 st.download_button(
                     "⬇️ Download Coating_Labs_Dashboard.xlsx",
@@ -1613,7 +1827,8 @@ elif "Tool 2" in tool:
                 )
                 st.success("✅ Done!")
     else:
-        st.info("👆 Upload an Excel file with Cold Spray, HVOF, and/or Plasma data.")
+        st.info("👆 Upload one or more Excel files with Cold Spray, HVOF, and/or Plasma data — "
+                "any layout works (long, wide, messy headers, or one monthly-block file per type).")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1630,20 +1845,20 @@ elif "Tool 3" in tool:
 
     # ── File upload ───────────────────────────────────────
     st.markdown('<div class="section-label">📂 Upload Excel File</div>', unsafe_allow_html=True)
-    uploaded_t3 = st.file_uploader("", type=["xlsx","xls"], key="t3_file",
+    uploaded_t3 = st.file_uploader("", type=["xlsx","xls"], key=_uploader_key("t3_file"),
                                     label_visibility="collapsed")
     fc3 = _persist_upload("_fc_t3", uploaded_t3)
     if fc3 and uploaded_t3 is None:
         st.success(f"✅ {fc3['name']} loaded")
     if fc3:
         if st.button("✖ Remove file", key="t3_remove"):
-            st.session_state["_fc_t3"] = None
+            _reset_uploader("t3_file", "_fc_t3")
             st.rerun()
 
     # ── Capacity config ───────────────────────────────────
     st.markdown('<div class="section-label">⚙️ Rig Capacity (samples/year)</div>', unsafe_allow_html=True)
 
-    r1_cap = st.number_input("🔶 Thermal Rig capacity", value=200, min_value=1, max_value=9999,
+    r1_cap = st.number_input("🔶 Thermal Rig capacity", value=20, min_value=1, max_value=9999,
                               key="t3_r1")
     st.caption(f"→ {r1_cap/52:.1f} samples/wk  |  Vacant if below capacity")
 
@@ -1714,8 +1929,12 @@ elif "Tool 3" in tool:
                 gantt_yr_t3 = (CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_t3]
                                else int(max(years_t3)))
                 gantt_wk_t3 = CURRENT_WEEK if gantt_yr_t3 == CURRENT_YEAR else 52
+                hl_default_t3 = gantt_wk_t3 if gantt_yr_t3 == CURRENT_YEAR else 1
+                hl_week_t3 = st.selectbox("Period Highlight (week)", list(range(1, 53)),
+                                           index=hl_default_t3 - 1, key="t3_gantt_hl")
                 fig_gantt_t3 = chart_gantt(wdf_t3, types_t3, rig_caps_t3,
-                                            gantt_yr_t3, gantt_wk_t3)
+                                            gantt_yr_t3, gantt_wk_t3,
+                                            highlight_week=hl_week_t3)
                 st.plotly_chart(fig_gantt_t3, use_container_width=True)
 
             with tabs_t3[4]:
@@ -1778,7 +1997,7 @@ elif "Tool 4" in tool:
         "",
         type=["xlsx","xls"],
         accept_multiple_files=True,
-        key="t4_files",
+        key=_uploader_key("t4_files"),
         label_visibility="collapsed",
         help="Upload one combined file OR up to 3 separate files (one per lab group). Duplicates are merged.",
     )
@@ -1789,7 +2008,7 @@ elif "Tool 4" in tool:
         st.success(f"✅ {len(uploaded_3)} file(s) loaded: {', '.join(f.name for f in uploaded_3)}")
     if fc4_list:
         if st.button("✖ Remove files", key="t4_remove"):
-            st.session_state["_fc_t4"] = None
+            _reset_uploader("t4_files", "_fc_t4")
             st.rerun()
 
     # ── Capacities — 3 columns, one per group ─────────────
@@ -1815,7 +2034,7 @@ elif "Tool 4" in tool:
 
     with cc3:
         st.markdown('<div class="section-label">🟠 Thermal Capacities</div>', unsafe_allow_html=True)
-        tr1 = st.number_input("Thermal Rig", value=200, min_value=1, key="t4_r1")
+        tr1 = st.number_input("Thermal Rig", value=20, min_value=1, key="t4_r1")
         caps_c3 = {"Thermal Rig": tr1}
         st.caption(f"→ {tr1/52:.1f}/wk")
 
@@ -1824,12 +2043,14 @@ elif "Tool 4" in tool:
 
     if fc4_list:
         paths_3 = [_bytes_to_tmp(f["bytes"], original_name=f["name"]) for f in fc4_list]
-        merged_df, col_map_3, errors_3, file_log_3 = merge_files(paths_3)
+        merged_df, col_map_3, errors_3, file_log_3 = _load_multi_files(paths_3, ALL_TYPES, "t4")
 
         for log_line in file_log_3:
             if log_line.startswith("OK"):
                 st.success(log_line)
             elif "WARNING" in log_line:
+                st.warning(log_line)
+            elif log_line.startswith("SKIPPED") or log_line.startswith("ERROR"):
                 st.warning(log_line)
 
         if errors_3:
@@ -1926,13 +2147,33 @@ elif "Tool 4" in tool:
                                              marker_color=col_maps_c[ti % 3],
                                              text=[f"{v:.0f}" for v in vals],
                                              textposition="outside", legendgroup="C"), row=1, col=3)
-                fig.add_hline(y=cap_a, line_dash="dot", line_color="#1A4E8A",
-                               annotation_text=f"Cap A:{cap_a}", row=1, col=1)
-                fig.add_hline(y=cap_b, line_dash="dot", line_color="#1F5C1A",
-                               annotation_text=f"Cap B:{cap_b}", row=1, col=2)
+                # Capacity reference lines + corner badges.
+                # The old approach attached the "Cap A:72" text directly to
+                # the dashed line via annotation_text, which Plotly places
+                # at the line's height — right where tall bars and their
+                # "outside" value labels also sit, causing the text to
+                # collide/overlap (e.g. "Cap A:72" over a "66" bar label).
+                # Pinning the badge to a fixed corner of each subplot
+                # (paper-domain coordinates, not data coordinates) keeps it
+                # legible regardless of bar heights.
+                def _cap_badge(row, col, cap_val, color, label):
+                    fig.add_hline(y=cap_val, line_dash="dot", line_color=color,
+                                   row=row, col=col)
+                    fig.add_annotation(
+                        text=f"{label}: {cap_val:.0f}/yr",
+                        xref="x domain", yref="y domain",
+                        x=0.02, y=0.97, xanchor="left", yanchor="top",
+                        showarrow=False,
+                        font=dict(size=10, color=color),
+                        bgcolor="rgba(255,255,255,0.88)",
+                        bordercolor=color, borderwidth=1, borderpad=3,
+                        row=row, col=col,
+                    )
+
+                _cap_badge(1, 1, cap_a, "#1A4E8A", "Cap A")
+                _cap_badge(1, 2, cap_b, "#1F5C1A", "Cap B")
                 if has_c:
-                    fig.add_hline(y=cap_c, line_dash="dot", line_color="#7F3F00",
-                                   annotation_text=f"Cap C:{cap_c}", row=1, col=3)
+                    _cap_badge(1, 3, cap_c, "#7F3F00", "Cap C")
                 fig.update_layout(barmode="group", height=480,
                                    title="Annual Demand Comparison — All 3 Lab Groups",
                                    font=dict(family="Arial", size=11),
@@ -1993,13 +2234,10 @@ elif "Tool 4" in tool:
                 wdf_a3, wdf_b3, wdf_c3, types_a3, types_b3, types_c3 or [],
                 years_3, sum_caps_a3, sum_caps_b3, sum_caps_c3, has_c3)
 
-            # Gantt figures
+            # Gantt year/week (figures generated inside the Gantt tab below,
+            # once the Period Highlight selector value is known)
             g_yr3 = CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_3] else int(max(years_3))
             g_wk3 = CURRENT_WEEK if g_yr3 == CURRENT_YEAR else 52
-            fig_ga3 = chart_gantt(wdf_a3, types_a3, caps_a3, g_yr3, g_wk3)
-            fig_gb3 = chart_gantt(wdf_b3, types_b3, caps_b3, g_yr3, g_wk3)
-            fig_gc3 = (chart_gantt(wdf_c3, types_c3, caps_c3, g_yr3, g_wk3)
-                       if has_c3 else None)
 
             # ── TABS ─────────────────────────────────────
             tabs4 = st.tabs(["📊 Comparison Charts", "🥧 YoY Pie Charts",
@@ -2029,6 +2267,14 @@ elif "Tool 4" in tool:
                 st.plotly_chart(fig_util3, use_container_width=True)
 
             with tabs4[3]:
+                hl_default3 = g_wk3 if g_yr3 == CURRENT_YEAR else 1
+                hl_week_3 = st.selectbox("Period Highlight (week) — applies to all 3 groups",
+                                          list(range(1, 53)), index=hl_default3 - 1,
+                                          key="t4_gantt_hl")
+                fig_ga3 = chart_gantt(wdf_a3, types_a3, caps_a3, g_yr3, g_wk3, highlight_week=hl_week_3)
+                fig_gb3 = chart_gantt(wdf_b3, types_b3, caps_b3, g_yr3, g_wk3, highlight_week=hl_week_3)
+                fig_gc3 = (chart_gantt(wdf_c3, types_c3, caps_c3, g_yr3, g_wk3, highlight_week=hl_week_3)
+                           if has_c3 else None)
                 gcol1, gcol2, gcol3 = st.columns(3)
                 with gcol1:
                     st.markdown("**🔵 Mechanical**")
