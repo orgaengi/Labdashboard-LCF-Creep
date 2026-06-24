@@ -454,10 +454,13 @@ def generate_excel(tool_fn, *args, **kwargs):
 #  PLOTLY CHART BUILDERS
 # ──────────────────────────────────────────────────────────
 
-def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
+def chart_yoy_bar_and_pie(annual_totals, types, years, colors, lab_name=""):
     """YoY grouped bar + single combined pie figure with per-pie color legends."""
     bar_colors = ["#1F3864","#2E75B6","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
     pie_colors = ["#2E75B6","#1F3864","#70AD47","#FFD700","#FF4444","#9DC3E6","#C6EFCE"]
+
+    # Build title suffix from lab_name
+    title_suffix = f" — {lab_name}" if lab_name else ""
 
     # ── Bar chart ─────────────────────────────────────────
     fig_bar = go.Figure()
@@ -469,17 +472,15 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
             text=[f"{v:.0f}" for v in y_vals], textposition="outside",
         ))
     n_types = len(types)
-    # For the YoY bar chart (x = years, bars per group = n_types):
-    # bargroupgap=0.12 is fixed; what changes is the width per bar.
-    # The old formula set an explicit width=bar_w which interacted badly
-    # with bargroupgap for single-type charts (only 1 bar per group,
-    # so the bar fills almost the entire group slot even with bargroupgap).
-    # Fix: use a dynamically-scaled bargap (inter-group fraction) that
-    # grows when n_types is small — keeps bars proportional across all tools.
-    dynamic_bargap = min(0.6, max(0.15, 0.18 * max(n_types, 1)))
-    bar_w = max(0.15, min(0.5, 0.6 / max(n_types, 2)))
+    n_years = len(years)
+    # Bar spacing: avoid explicit width override which causes bars to overlap
+    # when many years are shown (width in axis-units exceeds the auto-slot width).
+    # Instead, rely on bargap (inter-group) and bargroupgap (intra-group) only.
+    # bargap scales with n_types so single-type tools still get reasonably wide bars.
+    dynamic_bargap = min(0.70, max(0.25, 0.75 - 0.10 * max(n_types, 1)))
     fig_bar.update_layout(
-        barmode="group", title="Year-on-Year Demand by Lab Type",
+        barmode="group",
+        title=f"Year-on-Year Demand{title_suffix}",
         xaxis=dict(type="category", title="Year",
                    tickmode="array", tickvals=[str(y) for y in years],
                    ticktext=[str(y) for y in years]),
@@ -489,9 +490,9 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
         height=460, plot_bgcolor="white", paper_bgcolor="white",
         font=dict(family="Arial", size=11), margin=dict(t=50, b=110, r=20),
         uniformtext=dict(minsize=8, mode="hide"),
-        bargroupgap=0.12, bargap=dynamic_bargap,
+        bargroupgap=0.15, bargap=dynamic_bargap,
     )
-    fig_bar.update_traces(width=bar_w)
+    # No explicit width= — Plotly auto-sizes bars correctly inside each group slot
     fig_bar.update_xaxes(showgrid=False)
     fig_bar.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
 
@@ -534,13 +535,37 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
             row=r, col=c,
         )
 
+    # ── Centre the last row when it is not completely full ─
+    n_last = n % NCOLS   # 0 means last row is full
+    col_w  = (1.0 - (NCOLS - 1) * HS) / NCOLS
+    if n_last > 0 and NROWS > 1:
+        # Total width occupied by n_last centred pies
+        total_w = n_last * col_w + (n_last - 1) * HS
+        x_start = (1.0 - total_w) / 2
+        last_row_trace_start = (NROWS - 1) * NCOLS
+        for j in range(n_last):
+            trace_idx = last_row_trace_start + j
+            if trace_idx < len(fig_pies.data):
+                new_x0 = x_start + j * (col_w + HS)
+                new_x1 = new_x0 + col_w
+                cur_y  = fig_pies.data[trace_idx].domain.y
+                fig_pies.data[trace_idx].update(
+                    domain=dict(x=[new_x0, new_x1], y=list(cur_y))
+                )
+
+    # ── Prevent pies from touching the bottom — compress y-domains ─
+    # Reserve a strip at the bottom of each row for the legend annotations
+    # so pies never abut the legend text.
+    PIE_Y_RESERVE = 0.06   # fraction of chart height reserved per row legend
+    for k, trace in enumerate(fig_pies.data):
+        if trace.type == "pie":
+            y0, y1 = trace.domain.y
+            row_span = (1.0 + (NROWS - 1) * VS) / NROWS if NROWS > 0 else 1.0
+            new_y0 = y0 + PIE_Y_RESERVE * row_span
+            trace.update(domain=dict(y=[new_y0, y1]))
+
     # ── One shared legend per ROW of pies ─────────────────
-    # Previously every individual pie had its own duplicate legend below it
-    # (visible in the screenshot where "Cold Spray HVOF Plasma" repeated 4
-    # times across one row). Now each ROW gets exactly one centered legend,
-    # placed below the bottom edge of that row's pies.
     row_h = (1.0 - (NROWS - 1) * VS) / NROWS
-    col_w = (1.0 - (NCOLS - 1) * HS) / NCOLS
 
     SWATCH_W = 0.020
     CHAR_W   = 0.0078
@@ -556,19 +581,23 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
         # Determine how many valid pies are in this row
         first_in_row = row_i * NCOLS
         last_in_row  = min(first_in_row + NCOLS, n) - 1
-        n_in_row = last_in_row - first_in_row + 1
+        n_in_row     = last_in_row - first_in_row + 1
 
-        # X-centre of the used columns in this row (cols 0 … n_in_row-1)
-        used_width = n_in_row * col_w + (n_in_row - 1) * HS
-        x_used_ctr = used_width / 2
+        # For the last row when centred, x-centre is 0.5 (full width centred)
+        is_last_centred = (row_i == NROWS - 1 and n_last > 0 and NROWS > 1)
+        if is_last_centred:
+            x_used_ctr = 0.5
+        else:
+            used_width = n_in_row * col_w + (n_in_row - 1) * HS
+            x_used_ctr = used_width / 2
 
-        # Y-bottom of this row in paper coords
+        # Y-bottom of this row in paper coords — extra gap to clear the pie edge
         row_bottom = 1.0 - (row_i + 1) * row_h - row_i * VS
-        y_leg = row_bottom - 0.045
+        y_leg = row_bottom - 0.075   # increased from 0.045 — clears the compressed pie bottom
 
-        # Start x for the legend block (centred below the used columns)
-        x_start   = x_used_ctr - TOTAL_LEG_W / 2
-        x_cursor  = x_start
+        # Start x for the legend block (centred)
+        x_start  = x_used_ctr - TOTAL_LEG_W / 2
+        x_cursor = x_start
         for j, (t, col) in enumerate(zip(types, pie_colors)):
             fig_pies.add_annotation(
                 x=x_cursor, y=y_leg, text="■",
@@ -582,12 +611,12 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
             )
             x_cursor += item_widths[j]
 
-    # Bottom margin must be large enough for row NROWS annotations (y may be negative)
-    bottom_margin = max(60, int(len(types) * 18 + 40))
+    # Bottom margin large enough for the last-row annotations
+    bottom_margin = max(80, int(len(types) * 18 + 60))
 
     fig_pies.update_layout(
-        title="Process-wise Demand Share (%) by Year",
-        height=max(320, 300 * NROWS + bottom_margin),
+        title=f"Process-wise Demand Share (%) by Year{title_suffix}",
+        height=max(340, 300 * NROWS + bottom_margin),
         showlegend=False,
         paper_bgcolor="white",
         font=dict(family="Arial", size=11),
@@ -597,7 +626,7 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
     return fig_bar, fig_pies
 
 
-def chart_capacity_bar(weekly_df, types, capacities, years):
+def chart_capacity_bar(weekly_df, types, capacities, years, lab_name=""):
     """Capacity vs Avg Weekly Demand — demand bars + capacity reference line/marker."""
     fig = go.Figure()
     cap_weekly = {t: capacities.get(t, 1) / 52 for t in types}
@@ -649,9 +678,10 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
         max(cap_vals, default=0)
     ) * 1.35
 
+    title_suffix = f" — {lab_name}" if lab_name else ""
     fig.update_layout(
         barmode="group",
-        title="Average Weekly Demand vs Capacity",
+        title=f"Average Weekly Demand vs Capacity{title_suffix}",
         xaxis=dict(type="category", title="Lab Type"),
         yaxis=dict(title="Weekly Units", range=[0, y_top]),
         height=460, plot_bgcolor="white", paper_bgcolor="white",
@@ -670,7 +700,7 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
     return fig
 
 
-def chart_utilization_line(util_df, types, years, colors):
+def chart_utilization_line(util_df, types, years, colors, lab_name=""):
     """Monthly utilization line chart with 100%/80% reference lines."""
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
@@ -708,8 +738,9 @@ def chart_utilization_line(util_df, types, years, colors):
     margin_b      = 90 + legend_rows * 38
     chart_height  = 440 + max(0, legend_rows - 2) * 40
 
+    title_suffix_u = f" — {lab_name}" if lab_name else ""
     fig.update_layout(
-        title="Monthly Utilization Trend by Lab Type",
+        title=f"Monthly Utilization Trend{title_suffix_u}",
         xaxis_title=None,   # "Month" removed — labels (Jan–Dec) are self-explanatory
                             # and prevented overlap with the multi-row legend below
         yaxis_title="Utilization",
@@ -726,7 +757,7 @@ def chart_utilization_line(util_df, types, years, colors):
     return fig
 
 
-def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week=None):
+def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week=None, lab_name=""):
     """
     Lab Occupancy Gantt — segmented horizontal bar chart (Project Planner style).
 
@@ -841,7 +872,7 @@ def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week
 
     fig.update_layout(
         barmode="overlay",
-        title=f"Lab Occupancy Gantt — {year}",
+        title=f"Lab Occupancy Gantt — {year}" + (f" — {lab_name}" if lab_name else ""),
         xaxis=dict(
             title="",
             range=[0, 58],          # extra space for util% annotations
@@ -1666,17 +1697,20 @@ if "Tool 1" in tool:
 
             with tabs[0]:
                 fig_util = chart_utilization_line(udf_1, types_1, years_1,
-                                                   THEME_COLORS[theme_name])
+                                                   THEME_COLORS[theme_name],
+                                                   lab_name="LCF & Creep Lab")
                 st.plotly_chart(fig_util, use_container_width=True)
 
             with tabs[1]:
                 fig_bar_1, fig_pies_1 = chart_yoy_bar_and_pie(annual_1, types_1, years_1,
-                                                             THEME_COLORS[theme_name])
+                                                             THEME_COLORS[theme_name],
+                                                             lab_name="LCF & Creep Lab")
                 st.plotly_chart(fig_bar_1, use_container_width=True)
                 st.plotly_chart(fig_pies_1, use_container_width=True)
 
             with tabs[2]:
-                fig_cap = chart_capacity_bar(wdf_1, types_1, caps_1, years_1)
+                fig_cap = chart_capacity_bar(wdf_1, types_1, caps_1, years_1,
+                                             lab_name="LCF & Creep Lab")
                 st.plotly_chart(fig_cap, use_container_width=True)
 
             with tabs[3]:
@@ -1686,7 +1720,8 @@ if "Tool 1" in tool:
                 hl_week_1 = st.selectbox("Period Highlight (week)", list(range(1, 53)),
                                           index=hl_default - 1, key="t1_gantt_hl")
                 fig_gantt = chart_gantt(wdf_1, types_1, caps_1, gantt_year, gantt_week,
-                                         highlight_week=hl_week_1)
+                                         highlight_week=hl_week_1,
+                                         lab_name="LCF & Creep Lab")
                 st.plotly_chart(fig_gantt, use_container_width=True)
 
             with tabs[4]:
@@ -1856,17 +1891,20 @@ elif "Tool 2" in tool:
 
             with tabs2[0]:
                 fig_u2 = chart_utilization_line(udf_2, types_2, years_2,
-                                                 THEME_COLORS[theme_name_2])
+                                                 THEME_COLORS[theme_name_2],
+                                                 lab_name="Spray Lab")
                 st.plotly_chart(fig_u2, use_container_width=True)
 
             with tabs2[1]:
                 fig_bar2, fig_pies_2 = chart_yoy_bar_and_pie(annual_2, types_2, years_2,
-                                                               THEME_COLORS[theme_name_2])
+                                                               THEME_COLORS[theme_name_2],
+                                                               lab_name="Spray Lab")
                 st.plotly_chart(fig_bar2, use_container_width=True)
                 st.plotly_chart(fig_pies_2, use_container_width=True)
 
             with tabs2[2]:
-                fig_cap2 = chart_capacity_bar(wdf_2, types_2, ind_caps_2, years_2)
+                fig_cap2 = chart_capacity_bar(wdf_2, types_2, ind_caps_2, years_2,
+                                               lab_name="Spray Lab")
                 st.plotly_chart(fig_cap2, use_container_width=True)
 
             with tabs2[3]:
@@ -1876,7 +1914,8 @@ elif "Tool 2" in tool:
                 hl_week_2 = st.selectbox("Period Highlight (week)", list(range(1, 53)),
                                           index=hl_default2 - 1, key="t2_gantt_hl")
                 fig_g2 = chart_gantt(wdf_2, types_2, ind_caps_2, gantt_year2, gantt_week2,
-                                      highlight_week=hl_week_2)
+                                      highlight_week=hl_week_2,
+                                      lab_name="Spray Lab")
                 st.plotly_chart(fig_g2, use_container_width=True)
 
             with tabs2[4]:
@@ -1995,17 +2034,20 @@ elif "Tool 3" in tool:
 
             with tabs_t3[0]:
                 fig_ut3 = chart_utilization_line(udf_t3, types_t3, years_t3,
-                                                  THEME_COLORS[theme_name_t3])
+                                                  THEME_COLORS[theme_name_t3],
+                                                  lab_name="Oxidation Lab OHC")
                 st.plotly_chart(fig_ut3, use_container_width=True)
 
             with tabs_t3[1]:
                 fig_bar_t3, fig_pies_t3 = chart_yoy_bar_and_pie(
-                    annual_t3, types_t3, years_t3, THEME_COLORS[theme_name_t3])
+                    annual_t3, types_t3, years_t3, THEME_COLORS[theme_name_t3],
+                    lab_name="Oxidation Lab OHC")
                 st.plotly_chart(fig_bar_t3, use_container_width=True)
                 st.plotly_chart(fig_pies_t3, use_container_width=True)
 
             with tabs_t3[2]:
-                fig_cap_t3 = chart_capacity_bar(wdf_t3, types_t3, rig_caps_t3, years_t3)
+                fig_cap_t3 = chart_capacity_bar(wdf_t3, types_t3, rig_caps_t3, years_t3,
+                                                 lab_name="Oxidation Lab OHC")
                 st.plotly_chart(fig_cap_t3, use_container_width=True)
 
             with tabs_t3[3]:
@@ -2017,7 +2059,8 @@ elif "Tool 3" in tool:
                                            index=hl_default_t3 - 1, key="t3_gantt_hl")
                 fig_gantt_t3 = chart_gantt(wdf_t3, types_t3, rig_caps_t3,
                                             gantt_yr_t3, gantt_wk_t3,
-                                            highlight_week=hl_week_t3)
+                                            highlight_week=hl_week_t3,
+                                            lab_name="Oxidation Lab OHC")
                 st.plotly_chart(fig_gantt_t3, use_container_width=True)
 
             with tabs_t3[4]:
@@ -2332,18 +2375,21 @@ elif "Tool 4" in tool:
             with tabs4[1]:
                 st.subheader("🔵 Mechanical Labs — Process Share")
                 _, fig_pies_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
-                                                         THEME_COLORS[theme_name_3])
+                                                         THEME_COLORS[theme_name_3],
+                                                         lab_name="Mechanical Labs")
                 st.plotly_chart(fig_pies_a3, use_container_width=True)
 
                 st.subheader("🟢 Spray Lab — Process Share")
                 _, fig_pies_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
-                                                         THEME_COLORS[theme_name_3])
+                                                         THEME_COLORS[theme_name_3],
+                                                         lab_name="Spray Lab")
                 st.plotly_chart(fig_pies_b3, use_container_width=True)
 
                 if has_c3:
                     st.subheader("🟠 Oxidation Lab OHC — Process Share")
                     _, fig_pies_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
-                                                             THEME_COLORS[theme_name_3])
+                                                             THEME_COLORS[theme_name_3],
+                                                             lab_name="Oxidation Lab OHC")
                     st.plotly_chart(fig_pies_c3, use_container_width=True)
 
             with tabs4[2]:
@@ -2354,9 +2400,9 @@ elif "Tool 4" in tool:
                 hl_week_3 = st.selectbox("Period Highlight (week) — applies to all 3 groups",
                                           list(range(1, 53)), index=hl_default3 - 1,
                                           key="t4_gantt_hl")
-                fig_ga3 = chart_gantt(wdf_a3, types_a3, caps_a3, g_yr3, g_wk3, highlight_week=hl_week_3)
-                fig_gb3 = chart_gantt(wdf_b3, types_b3, caps_b3, g_yr3, g_wk3, highlight_week=hl_week_3)
-                fig_gc3 = (chart_gantt(wdf_c3, types_c3, caps_c3, g_yr3, g_wk3, highlight_week=hl_week_3)
+                fig_ga3 = chart_gantt(wdf_a3, types_a3, caps_a3, g_yr3, g_wk3, highlight_week=hl_week_3, lab_name="Mechanical Labs")
+                fig_gb3 = chart_gantt(wdf_b3, types_b3, caps_b3, g_yr3, g_wk3, highlight_week=hl_week_3, lab_name="Spray Lab")
+                fig_gc3 = (chart_gantt(wdf_c3, types_c3, caps_c3, g_yr3, g_wk3, highlight_week=hl_week_3, lab_name="Oxidation Lab OHC")
                            if has_c3 else None)
                 gcol1, gcol2, gcol3 = st.columns(3)
                 with gcol1:
