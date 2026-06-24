@@ -106,7 +106,7 @@ def generate_lcf_creep(input_path, capacities, theme, progress_cb=None):
 # ============================================================
 
 """
-Tool 2 — Coating Labs Dashboard (Cold Spray, HVOF, Plasma)
+Tool 2 — Spray Lab Dashboard (Cold Spray, HVOF, Plasma)
 ============================================================
 Combined capacity = 350 samples/year across all 3 coating labs.
 Individual + combined utilization tracking.
@@ -126,7 +126,7 @@ from openpyxl.utils import get_column_letter
 
 
 # ── Tool-specific config ──────────────────────────────────
-TOOL_TITLE    = "Coating Labs Dashboard (Cold Spray, HVOF, Plasma)"
+TOOL_TITLE    = "Spray Lab Dashboard (Cold Spray, HVOF, Plasma)"
 COATING_ALLOWED_TYPES = ["Cold Spray", "HVOF", "Plasma"]   # unique name
 COATING_OUTPUT_FILE = "Coating_Labs_Dashboard.xlsx"   # unique name — see note
                                                        # above LCF_OUTPUT_FILE
@@ -149,7 +149,7 @@ def write_combined_sheet(wb, weekly_df, types, years, combined_cap):
     """Shows total combined demand across all coating labs vs 350 cap."""
     ws = wb.create_sheet("Combined_Utilization")
     core.banner(ws, 1,
-                f"Combined Coating Labs — Total Demand vs {combined_cap}/yr Capacity",
+                f"Combined Spray Lab — Total Demand vs {combined_cap}/yr Capacity",
                 cols=20)
 
     weekly_cap = combined_cap / 52
@@ -203,7 +203,7 @@ def write_combined_chart(wb, weekly_df, types, years, combined_cap):
     """Line chart: combined weekly demand vs combined capacity."""
     ws = wb.create_sheet("Chart_Combined")
     core.banner(ws, 1,
-                f"Combined Coating Labs — Weekly Demand Trend vs {combined_cap}/yr Cap",
+                f"Combined Spray Lab — Weekly Demand Trend vs {combined_cap}/yr Cap",
                 cols=30)
 
     # Build monthly aggregated combined demand
@@ -260,7 +260,7 @@ def write_combined_chart(wb, weekly_df, types, years, combined_cap):
 
     # Line chart
     chart = LineChart()
-    chart.title        = f"Combined Coating Labs Weekly Demand (Cap={combined_cap}/yr)"
+    chart.title        = f"Combined Spray Lab Weekly Demand (Cap={combined_cap}/yr)"
     chart.y_axis.title = "Weekly Demand (samples)"
     chart.x_axis.title = "Month"
     chart.style        = 10
@@ -395,19 +395,19 @@ def generate_coating(input_path, individual_caps, theme, progress_cb=None):
 # ============================================================
 
 """
-Tool 3 — Thermal Lab Dashboard
+Tool 3 — Oxidation Lab OHC Dashboard
 ================================
 Tracks up to N Thermal Rigs (dynamic — rig names driven by rig_caps dict).
 Default rigs: Thermal Rig 1, Thermal Rig 2, Thermal Rig 3 (20 samples/yr each).
 """
 
-THERMAL_TOOL_TITLE = "Thermal Lab Dashboard"
+THERMAL_TOOL_TITLE = "Oxidation Lab OHC Dashboard"
 THERMAL_OUTPUT_FILE = "Thermal_Lab_Dashboard.xlsx"
 
 
 def generate_thermal(input_path, rig_caps, theme, progress_cb=None):
     """
-    Generate an 8-sheet Thermal Lab Excel dashboard.
+    Generate an 8-sheet Oxidation Lab OHC Excel dashboard.
 
     Parameters
     ----------
@@ -503,9 +503,9 @@ OUTPUT_FILE = "Lab_Comparison_Dashboard.xlsx"
 
 GROUP_A = {"name":"Mechanical Labs","types":["LCF","Creep"],
            "caps":{"LCF":50,"Creep":22},"color":"1A4E8A","cap_total":72}
-GROUP_B = {"name":"Coating Labs","types":["Cold Spray","HVOF","Plasma"],
+GROUP_B = {"name":"Spray Lab","types":["Cold Spray","HVOF","Plasma"],
            "caps":{"Cold Spray":140,"HVOF":120,"Plasma":90},"color":"1F5C1A","cap_total":350}
-GROUP_C = {"name":"Thermal Lab","types":["Thermal Rig"],
+GROUP_C = {"name":"Oxidation Lab OHC","types":["Thermal Rig"],
            "caps":{"Thermal Rig":20},
            "color":"7F3F00","cap_total":20}
 ALL_TYPES = GROUP_A["types"] + GROUP_B["types"] + GROUP_C["types"]
@@ -721,7 +721,7 @@ def write_comparison_chart(wb, wdf_a, wdf_b, years, wdf_c=None, caps_c=None):
         ws.cell(ri,3,GROUP_A["cap_total"]); core.fmt(ws.cell(ri,3),number_format="#,##0")
         ws.cell(ri,5,GROUP_B["cap_total"]); core.fmt(ws.cell(ri,5),number_format="#,##0")
     chart=BarChart(); chart.type="col"; chart.grouping="clustered"
-    chart.title="Annual Demand — Mechanical vs Coating Labs"
+    chart.title="Annual Demand — Mechanical vs Spray Lab"
     chart.y_axis.title="Samples/Year"; chart.x_axis.title="Year"
     chart.style=10; chart.height=15; chart.width=28
     cats=Reference(ws,min_col=1,min_row=D0,max_row=DE)
@@ -758,7 +758,7 @@ def write_comparison_chart(wb, wdf_a, wdf_b, years, wdf_c=None, caps_c=None):
                 cell=ws.cell(row,col,round(util,4)); cell.number_format="0.0%"
                 cell.font=Font(name="Arial",size=9); cell.alignment=Alignment(horizontal="center")
     chart2=LineChart()
-    chart2.title="Monthly Utilization — Mechanical vs Coating Labs"
+    chart2.title="Monthly Utilization — Mechanical vs Spray Lab"
     chart2.y_axis.title="Utilization %"; chart2.x_axis.title="Month"
     chart2.y_axis.numFmt="0%"; chart2.y_axis.scaling.min=0
     chart2.style=10; chart2.height=14; chart2.width=28

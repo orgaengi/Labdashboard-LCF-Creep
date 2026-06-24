@@ -51,6 +51,18 @@ COLOR_THEMES = {
         "high": "FF9999", "medium": "FFEB99", "low": "C6EFCE",
         "high_font": "333333", "medium_font": "333333", "low_font": "333333",
     },
+    "Teal/Coral": {
+        "high": "E05050", "medium": "E8A838", "low": "2AADA8",
+        "high_font": "FFFFFF", "medium_font": "333333", "low_font": "FFFFFF",
+    },
+    "Purple Haze": {
+        "high": "7030A0", "medium": "C55A11", "low": "4BACC6",
+        "high_font": "FFFFFF", "medium_font": "FFFFFF", "low_font": "FFFFFF",
+    },
+    "Monochrome": {
+        "high": "262626", "medium": "737373", "low": "BFBFBF",
+        "high_font": "FFFFFF", "medium_font": "FFFFFF", "low_font": "333333",
+    },
 }
 
 CURRENT_YEAR = datetime.date.today().year
@@ -1156,107 +1168,135 @@ def write_gantt_current_year(wb, weekly_df, types, capacities,
 
 def write_gantt_all_years(wb, weekly_df, types, capacities, years):
     """
-    Lab occupancy Gantt — one continuous colour-banded row per lab type per
-    year. Previously this used ▒/░ symbols over 3 states; it's now flat
-    solid-colour blocks across 4 states (vacant/within/near/over capacity),
-    matching the Streamlit Gantt tab's redesign, so adjoining same-status
-    weeks read as one unbroken bar segment instead of a symbol-marked grid.
-    The current week (if 'years' includes the current year) gets a bold
-    border down its whole column as a period-highlight marker.
+    Lab Occupancy Gantt — Excel Project Planner style (matches reference template).
+
+    Left summary columns (Lab Type | Year | Ann. Cap | Ann. Demand | Util % | Status)
+    then 52 week columns colour-coded:
+      GREEN  = within capacity (<80%)
+      YELLOW = near capacity (80-100%)
+      RED    = over capacity (>100%)
+      GREY   = vacant
+    Current week column = tan fill + orange header (Period Highlight).
     """
     ws = wb.create_sheet("Gantt_Chart")
-    banner(ws, 1, "Lab Occupancy Gantt — One Bar per Lab Type, by Week", cols=55)
+    banner(ws, 1, "Lab Occupancy Gantt — Project Planner Style (Lab Type × Year × Week)", cols=60)
 
-    GREY, GREEN, YELLOW, RED = "D9D9D9", "70AD47", "FFD700", "FF4444"
+    GREY_BG, GREEN_BG, YELLOW_BG, RED_BG = "D9D9D9","70AD47","FFD700","FF4444"
+    HL_BG, HL_HDR = "FDE9D9","C55A11"   # tan fill, orange header
 
-    # Legend — placed near the top (mirrors the reference template, where
-    # the legend sits right under the title rather than at the bottom).
-    # Each item gets a merge span sized to its label length — the week
-    # columns are only 1.8 units wide, far too narrow for text like
-    # "Over capacity — beyond plan" to fit in just 2-3 of them.
+    # Legend row
     LR = 2
     ws.cell(LR, 1, "Legend:").font = Font(bold=True, size=9, name="Arial")
     legend_items = [
-        ("Vacant",                        GREY,   "666666", 6),
-        ("Within capacity",                GREEN,  "FFFFFF", 9),
-        ("Near capacity (80–100%)",        YELLOW, "333333", 13),
-        ("Over capacity — beyond plan",    RED,    "FFFFFF", 17),
+        ("Within capacity",             GREEN_BG,  "FFFFFF", 9),
+        ("Near capacity (80-100%)",     YELLOW_BG, "333333", 13),
+        ("Over capacity",               RED_BG,    "FFFFFF", 10),
+        ("Vacant / no demand",          GREY_BG,   "666666", 10),
+        ("Period Highlight (cur. week)",HL_BG,     "C55A11",  8),
     ]
-    col = 3
+    col = 2
     for lbl, bg, fg, span in legend_items:
+        ws.merge_cells(start_row=LR, start_column=col, end_row=LR, end_column=col+span-1)
         c = ws.cell(LR, col, lbl)
         c.fill = PatternFill("solid", start_color=bg)
         c.font = Font(name="Arial", size=8, bold=True, color=fg)
         c.alignment = Alignment(horizontal="center")
-        ws.merge_cells(start_row=LR, start_column=col,
-                       end_row=LR, end_column=col + span - 1)
-        col += span + 1  # +1 leaves a 1-column gap between legend items
+        col += span + 1
+    ws.row_dimensions[LR].height = 14
 
-    # Quarter header row
-    QR = 3
-    for label, sc, ec in [("Q1",3,15),("Q2",16,28),("Q3",29,41),("Q4",42,54)]:
+    QR, HR = 3, 4
+    LEFT_HDRS   = ["Lab Type","Year","Ann. Cap","Ann. Demand","Util %","Status"]
+    LEFT_WIDTHS = [14, 7, 10, 12, 8, 12]
+    N_LEFT = len(LEFT_HDRS)
+
+    for ci, (h, w) in enumerate(zip(LEFT_HDRS, LEFT_WIDTHS), 1):
+        hdr(ws.cell(HR, ci, h), bg="1F3864", sz=8); cw(ws, ci, w)
+
+    # Quarter row
+    for q_lbl, q_s, q_e in [("Q1",1,13),("Q2",14,26),("Q3",27,39),("Q4",40,52)]:
+        sc = N_LEFT + q_s; ec = N_LEFT + q_e
         ws.merge_cells(start_row=QR, start_column=sc, end_row=QR, end_column=ec)
-        c = ws.cell(QR, sc, label)
+        c = ws.cell(QR, sc, q_lbl)
         c.font = Font(bold=True, size=8, name="Arial", color="FFFFFF")
         c.fill = PatternFill("solid", start_color="2E75B6")
         c.alignment = Alignment(horizontal="center")
+    ws.row_dimensions[QR].height = 13
 
-    HR = 4
-    hdr(ws.cell(HR,1,"Lab Type"), bg="1F3864", sz=9); cw(ws,1,14)
-    hdr(ws.cell(HR,2,"Year"),     bg="1F3864", sz=9); cw(ws,2,7)
+    hl_week   = CURRENT_WEEK if CURRENT_YEAR in [int(y) for y in years] else None
+    thick_sd  = Side(style="medium", color=HL_HDR)
 
-    # Mark the current week's column as the period-highlight, if the
-    # current year is among the years being charted.
-    highlight_week = CURRENT_WEEK if CURRENT_YEAR in [int(y) for y in years] else None
-    thick = Side(style="thick", color="C55A11")
-
-    for w in range(1,53):
-        c = ws.cell(HR, w+2, w)
-        c.font = Font(bold=True, size=7, name="Arial", color="FFFFFF")
-        c.fill = PatternFill("solid", start_color="2E75B6")
+    for w in range(1, 53):
+        c = ws.cell(HR, N_LEFT + w, w)
         c.alignment = Alignment(horizontal="center")
-        cw(ws, w+2, 1.8)
+        cw(ws, N_LEFT + w, 1.8)
+        if hl_week == w:
+            c.fill = PatternFill("solid", start_color=HL_HDR)
+            c.font = Font(bold=True, size=7, name="Arial", color="FFFFFF")
+            c.border = Border(left=thick_sd, right=thick_sd, top=thick_sd, bottom=thick_sd)
+        else:
+            c.fill = PatternFill("solid", start_color="2E75B6")
+            c.font = Font(bold=True, size=7, name="Arial", color="FFFFFF")
     ws.row_dimensions[HR].height = 14
 
     ri = HR + 1
     for t in types:
         for year in sorted(years):
-            yd = weekly_df[weekly_df["Year"]==year]
-            cap_wk = capacities.get(t,1)/52
-            lc = ws.cell(ri, 1, t)
-            lc.font = Font(bold=True,size=9,name="Arial"); lc.border=bdr()
-            yc = ws.cell(ri, 2, year)
-            yc.font = Font(size=9,name="Arial"); yc.border=bdr()
-            yc.alignment = Alignment(horizontal="center")
-            for w in range(1,53):
-                wrow = yd[yd["Week"]==w]
+            yd       = weekly_df[weekly_df["Year"] == year]
+            cap_yr   = capacities.get(t, 1)
+            cap_wk   = cap_yr / 52
+            dem_yr   = yd[t].sum() if not yd.empty and t in yd.columns else 0.0
+            util_pct = dem_yr / cap_yr * 100 if cap_yr > 0 else 0.0
+
+            if util_pct > 100:
+                st_str, st_bg, st_fg = "OVER CAPACITY", RED_BG, "FFFFFF"
+            elif util_pct >= 80:
+                st_str, st_bg, st_fg = "HIGH",          YELLOW_BG, "333333"
+            else:
+                st_str, st_bg, st_fg = "OK",            GREEN_BG, "FFFFFF"
+
+            for ci, val in enumerate([t, year, int(cap_yr), int(round(dem_yr)),
+                                        f"{util_pct:.1f}%", st_str], 1):
+                c = ws.cell(ri, ci, val)
+                c.font = Font(bold=(ci==1), size=9, name="Arial")
+                c.border = bdr()
+                c.alignment = Alignment(horizontal="center" if ci > 1 else "left")
+                if ci in (5, 6):
+                    c.fill = PatternFill("solid", start_color=st_bg)
+                    c.font = Font(bold=True, size=9, name="Arial", color=st_fg)
+
+            for w in range(1, 53):
+                wrow = yd[yd["Week"] == w]
                 dem  = float(wrow[t].values[0]) if not wrow.empty else 0.0
-                util = dem/cap_wk if cap_wk>0 else 0.0
-                cell = ws.cell(ri, w+2)
-                cell.alignment = Alignment(horizontal="center")
+                util = dem / cap_wk if cap_wk > 0 else 0.0
+
                 if util > 1.0:
-                    bg = RED
+                    bg = RED_BG
                 elif util >= 0.8:
-                    bg = YELLOW
+                    bg = YELLOW_BG
                 elif util >= 0.05:
-                    bg = GREEN
+                    bg = GREEN_BG
                 else:
-                    bg = GREY
-                cell.fill = PatternFill("solid", start_color=bg)
-                # Period-highlight column: thick orange border, this
-                # year's row only, instead of a value/symbol — keeps the
-                # bar's colour banding undisturbed while still marking it.
-                if highlight_week == w and year == CURRENT_YEAR:
-                    cell.border = Border(left=thick, right=thick, top=thick, bottom=thick)
+                    bg = GREY_BG
+
+                col_idx = N_LEFT + w
+                cell    = ws.cell(ri, col_idx)
+                cell.fill      = PatternFill("solid", start_color=bg)
+                cell.alignment = Alignment(horizontal="center")
+
+                if hl_week == w and int(year) == CURRENT_YEAR:
+                    cell.fill   = PatternFill("solid", start_color=HL_BG)
+                    cell.border = Border(left=thick_sd, right=thick_sd,
+                                          top=thick_sd, bottom=thick_sd)
                 else:
                     cell.border = bdr("EEEEEE")
+
             ws.row_dimensions[ri].height = 12
             ri += 1
-        # blank row between lab types
-        ws.row_dimensions[ri].height = 6
+
+        ws.row_dimensions[ri].height = 5
         ri += 1
 
-    ws.freeze_panes = "C5"
+    ws.freeze_panes = f"G{HR+1}"
 
 
 def write_gantt_heatmap(wb, weekly_df, types, capacities, years):

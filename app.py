@@ -182,6 +182,9 @@ THEME_COLORS = {
     "Default (Red/Yellow/Green)": {"high":"#FF4444","medium":"#FFD700","low":"#70AD47"},
     "Blue Gradient":              {"high":"#1F4E79","medium":"#2E75B6","low":"#BDD7EE"},
     "Pastel":                     {"high":"#FF9999","medium":"#FFEB99","low":"#C6EFCE"},
+    "Teal/Coral":                 {"high":"#E05050","medium":"#E8A838","low":"#2AADA8"},
+    "Purple Haze":                {"high":"#7030A0","medium":"#C55A11","low":"#4BACC6"},
+    "Monochrome":                 {"high":"#262626","medium":"#737373","low":"#BFBFBF"},
 }
 
 CURRENT_YEAR = datetime.date.today().year
@@ -189,7 +192,7 @@ CURRENT_WEEK = datetime.date.today().isocalendar()[1]
 
 GROUP_A = {"name":"Mechanical Labs",  "types":["LCF","Creep"],
            "color":"#1A4E8A","cap_total":72}
-GROUP_B = {"name":"Coating Labs",     "types":["Cold Spray","HVOF","Plasma"],
+GROUP_B = {"name":"Spray Lab",     "types":["Cold Spray","HVOF","Plasma"],
            "color":"#1F5C1A","cap_per_lab":350}  # each lab independently 350/yr
 
 
@@ -466,8 +469,14 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
             text=[f"{v:.0f}" for v in y_vals], textposition="outside",
         ))
     n_types = len(types)
-    # Divide by max(n_types,2) so single-type charts (Tool 3 / Tool 4 Thermal)
-    # get the same bar width as Tool 1 (2 types) instead of an oversized 0.5
+    # For the YoY bar chart (x = years, bars per group = n_types):
+    # bargroupgap=0.12 is fixed; what changes is the width per bar.
+    # The old formula set an explicit width=bar_w which interacted badly
+    # with bargroupgap for single-type charts (only 1 bar per group,
+    # so the bar fills almost the entire group slot even with bargroupgap).
+    # Fix: use a dynamically-scaled bargap (inter-group fraction) that
+    # grows when n_types is small — keeps bars proportional across all tools.
+    dynamic_bargap = min(0.6, max(0.15, 0.18 * max(n_types, 1)))
     bar_w = max(0.15, min(0.5, 0.6 / max(n_types, 2)))
     fig_bar.update_layout(
         barmode="group", title="Year-on-Year Demand by Lab Type",
@@ -479,7 +488,8 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
                     x=0.5, xanchor="center"),
         height=460, plot_bgcolor="white", paper_bgcolor="white",
         font=dict(family="Arial", size=11), margin=dict(t=50, b=110, r=20),
-        uniformtext=dict(minsize=8, mode="hide"), bargroupgap=0.12,
+        uniformtext=dict(minsize=8, mode="hide"),
+        bargroupgap=0.12, bargap=dynamic_bargap,
     )
     fig_bar.update_traces(width=bar_w)
     fig_bar.update_xaxes(showgrid=False)
@@ -524,17 +534,17 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
             row=r, col=c,
         )
 
-    # ── Per-pie legend annotations (colored ■ + text) ─────
-    # Row heights in paper coords (row 1 = top)
+    # ── One shared legend per ROW of pies ─────────────────
+    # Previously every individual pie had its own duplicate legend below it
+    # (visible in the screenshot where "Cold Spray HVOF Plasma" repeated 4
+    # times across one row). Now each ROW gets exactly one centered legend,
+    # placed below the bottom edge of that row's pies.
     row_h = (1.0 - (NROWS - 1) * VS) / NROWS
-    # Width each column occupies
     col_w = (1.0 - (NCOLS - 1) * HS) / NCOLS
 
-    # Variable-width legend items: swatch + text width (scales with label length)
-    # so long labels like "Cold Spray" don't overlap short ones like "HVOF"
-    SWATCH_W = 0.020   # space reserved for the ■ glyph
-    CHAR_W   = 0.0078  # approx width per character at font-size 10
-    GAP_W    = 0.018   # trailing gap between legend items
+    SWATCH_W = 0.020
+    CHAR_W   = 0.0078
+    GAP_W    = 0.018
 
     def _item_width(label):
         return SWATCH_W + len(label) * CHAR_W + GAP_W
@@ -542,42 +552,33 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors):
     item_widths = [_item_width(t) for t in types]
     TOTAL_LEG_W = sum(item_widths)
 
-    for i, year in enumerate(years):
-        row_i = i // NCOLS   # 0-indexed
-        col_i = i %  NCOLS   # 0-indexed
+    for row_i in range(NROWS):
+        # Determine how many valid pies are in this row
+        first_in_row = row_i * NCOLS
+        last_in_row  = min(first_in_row + NCOLS, n) - 1
+        n_in_row = last_in_row - first_in_row + 1
 
-        # X-centre of this cell in paper coords
-        x_ctr = col_i * (col_w + HS) + col_w * 0.5
+        # X-centre of the used columns in this row (cols 0 … n_in_row-1)
+        used_width = n_in_row * col_w + (n_in_row - 1) * HS
+        x_used_ctr = used_width / 2
 
         # Y-bottom of this row in paper coords
-        # Row 0 (top) bottom = 1 - row_h
-        # Row 1 (next) bottom = 1 - row_h - VS - row_h = 1 - 2*row_h - VS
         row_bottom = 1.0 - (row_i + 1) * row_h - row_i * VS
-        y_leg = row_bottom - 0.04   # just below the pie
+        y_leg = row_bottom - 0.045
 
-        # Starting x for first legend item (centred group)
-        x_start = x_ctr - TOTAL_LEG_W / 2
-
-        x_cursor = x_start
+        # Start x for the legend block (centred below the used columns)
+        x_start   = x_used_ctr - TOTAL_LEG_W / 2
+        x_cursor  = x_start
         for j, (t, col) in enumerate(zip(types, pie_colors)):
-            x0 = x_cursor
-            # Colored ■ swatch
             fig_pies.add_annotation(
-                x=x0, y=y_leg,
-                text="■",
+                x=x_cursor, y=y_leg, text="■",
                 font=dict(color=col, size=14, family="Arial"),
-                xref="paper", yref="paper",
-                showarrow=False,
-                xanchor="left",
+                xref="paper", yref="paper", showarrow=False, xanchor="left",
             )
-            # Type label
             fig_pies.add_annotation(
-                x=x0 + SWATCH_W, y=y_leg,
-                text=t,
+                x=x_cursor + SWATCH_W, y=y_leg, text=t,
                 font=dict(color="#333", size=10, family="Arial"),
-                xref="paper", yref="paper",
-                showarrow=False,
-                xanchor="left",
+                xref="paper", yref="paper", showarrow=False, xanchor="left",
             )
             x_cursor += item_widths[j]
 
@@ -604,16 +605,11 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
     bar_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6","#C6EFCE"]
 
     # ── Demand bars per year ──────────────────────────────
-    # A manually-computed bar width (previous approach) turned out fragile:
-    # it could be tuned to look right for one combination of category count
-    # and year count, but kept breaking for others (verified: my last fix
-    # solved the 6-year/2-type case but still left 1-type/3-year bars
-    # touching edge-to-edge). The robust fix is to NOT set an explicit
-    # width at all and instead let Plotly size bars itself — that's what
-    # bargroupgap (gap between bars sharing one x-category, set below in
-    # update_layout) is actually designed for, and it scales correctly
-    # regardless of how many years or lab types are loaded (tested with
-    # 1–3 types and 2–8 years).
+    # bargap controls inter-group padding; with only 1 lab type there is
+    # no inter-group gap to exploit, so bars fill the full plot width.
+    # Scaling bargap up as n_types decreases keeps bar widths proportional.
+    n_types = len(types)
+    dynamic_bargap = min(0.65, max(0.15, 0.55 - 0.1 * max(n_types - 1, 0)))
     demand_vals = []
     for yi, year in enumerate(years):
         yd   = weekly_df[weekly_df["Year"] == year]
@@ -667,7 +663,7 @@ def chart_capacity_bar(weekly_df, types, capacities, years):
         # bargroupgap = gap between bars sharing the SAME category (i.e.
         # between years) — this is the one that actually fixes oversized/
         # touching bars, and was previously set far too low (0.05).
-        bargap=0.15, bargroupgap=0.2,
+        bargap=dynamic_bargap, bargroupgap=0.2,
     )
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0")
@@ -732,103 +728,175 @@ def chart_utilization_line(util_df, types, years, colors):
 
 def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week=None):
     """
-    Lab occupancy Gantt — one continuous horizontal bar per lab type for the
-    selected year.
+    Lab Occupancy Gantt — segmented horizontal bar chart (Project Planner style).
 
-    Previously this was a smooth red/yellow/green utilization GRADIENT
-    (a heatmap). Per the chosen redesign, it's now banded into four flat
-    colour states (vacant / within capacity / near capacity / over
-    capacity) with hard cutoffs instead of a gradient — adjacent weeks in
-    the same state then render as one unbroken block of colour, so each
-    row reads as a single annotated bar (like the reference Gantt template)
-    rather than a heatmap. A highlighted vertical band marks either the
-    current week (when viewing the current year) or a chosen
-    highlight_week, mirroring the reference template's "Period Highlight"
-    column.
+    Matches the reference template with:
+    - One bar per lab type, spanning 52 weeks
+    - Segments coloured by utilisation status (Vacant / Within / Near / Over)
+    - Future weeks (not yet elapsed) shown lighter — the "plan" portion
+    - Period Highlight: tan vertical band + label at selected week
+    - Current-week marker (dashed red line, current year only)
+    - Quarter boundary lines (Q1–Q4)
+    - Utilisation % annotation on the right of each bar
     """
-    weeks = list(range(1, 53))
-    yd    = weekly_df[weekly_df["Year"] == year]
+    GREY, GREEN, YELLOW, RED, FUTURE = "#D9D9D9","#70AD47","#FFD700","#FF4444","#ECECEC"
+    HL_COL = "#F4B183"
 
-    GREY, GREEN, YELLOW, RED = "#D9D9D9", "#70AD47", "#FFD700", "#FF4444"
+    hl_week = highlight_week if highlight_week else (current_week if year == CURRENT_YEAR else None)
+    yd = weekly_df[weekly_df["Year"] == year]
 
-    z, labels, text_grid = [], [], []
+    fig = go.Figure()
+
+    # ── Period Highlight tan column ───────────────────────
+    # x-axis is 0-indexed (week W occupies [W-1, W])
+    if hl_week and 1 <= hl_week <= 52:
+        fig.add_vrect(
+            x0=hl_week - 1, x1=hl_week,
+            fillcolor=HL_COL, opacity=0.45, layer="below", line_width=0,
+        )
+
+    # ── Bars ──────────────────────────────────────────────
     for t in types:
         cap_wk = capacities.get(t, 1) / 52
-        row_z, row_txt = [], []
-        for w in weeks:
+
+        # Per-week status
+        weeks_data = []
+        for w in range(1, 53):
             wrow = yd[yd["Week"] == w]
             dem  = float(wrow[t].values[0]) if not wrow.empty else 0.0
             util = dem / cap_wk if cap_wk > 0 else 0.0
-            row_z.append(round(min(util, 1.5), 3))
-            status = ("Over capacity" if util > 1.0 else
-                      "Near capacity" if util >= 0.8 else
-                      "Within capacity" if util >= 0.05 else
-                      "Vacant")
-            row_txt.append(f"Week {w} | {t}<br>Demand: {dem:.2f}<br>"
-                            f"Util: {util:.1%}<br>{status}")
-        z.append(row_z)
-        labels.append(t)
-        text_grid.append(row_txt)
+            is_future = (year == CURRENT_YEAR and w > current_week)
+            if is_future:
+                color, status = FUTURE, "Plan (future)"
+            elif util > 1.0:
+                color, status = RED,    "Over capacity"
+            elif util >= 0.8:
+                color, status = YELLOW, "Near capacity"
+            elif util >= 0.05:
+                color, status = GREEN,  "Within capacity"
+            else:
+                color, status = GREY,   "Vacant"
+            weeks_data.append((w, dem, util, color, status))
 
-    # Discrete colour BANDS rather than a gradient — duplicate stops at
-    # each threshold create a hard cutoff instead of a blend, which is
-    # what makes same-status weeks visually merge into one bar segment.
-    VACANT_T, NEAR_T, OVER_T = 0.05/1.5, 0.80/1.5, 1.00/1.5
-    colorscale = [
-        [0.0,      GREY],   [VACANT_T, GREY],
-        [VACANT_T, GREEN],  [NEAR_T,   GREEN],
-        [NEAR_T,   YELLOW], [OVER_T,   YELLOW],
-        [OVER_T,   RED],    [1.0,      RED],
-    ]
+        # Compress into contiguous same-colour segments
+        segs, i = [], 0
+        while i < 52:
+            cur_col = weeks_data[i][3]
+            j = i + 1
+            while j < 52 and weeks_data[j][3] == cur_col:
+                j += 1
+            n_wks   = j - i
+            avg_dem  = sum(weeks_data[k][1] for k in range(i, j)) / n_wks
+            avg_util = sum(weeks_data[k][2] for k in range(i, j)) / n_wks
+            segs.append((i, j, cur_col, weeks_data[i][4], avg_dem, avg_util))
+            i = j
 
-    fig = go.Figure(go.Heatmap(
-        z=z, x=[f"Wk{w}" for w in weeks], y=labels,
-        colorscale=colorscale, zmin=0, zmax=1.5,
-        text=text_grid, hovertemplate="%{text}<extra></extra>",
-        showscale=False,
-        xgap=0, ygap=4,   # ygap visually separates each lab type's bar
-    ))
+        # One bar trace per segment (barmode=overlay + base positions them)
+        for seg_start, seg_end, color, status_lbl, avg_dem, avg_util in segs:
+            w1, w2 = seg_start + 1, seg_end
+            hover = (
+                f"<b>{t}</b> — Wk {w1}" + (f"–{w2}" if w2 > w1 else "")
+                + f"<br>Avg demand: {avg_dem:.2f}/wk"
+                + f"<br>Avg utilisation: {avg_util:.1%}"
+                + f"<br>Status: {status_lbl}"
+            )
+            fig.add_trace(go.Bar(
+                name=status_lbl, y=[t], x=[seg_end - seg_start],
+                base=seg_start, orientation="h",
+                marker_color=color, marker_line_width=0,
+                showlegend=False,
+                hovertemplate=hover + "<extra></extra>",
+            ))
 
-    # Categorical legend — Heatmap traces have no native discrete legend,
-    # so this adds invisible marker traces purely to produce swatch+label
-    # legend entries (standard Plotly idiom), matching the reference
-    # template's legend row.
-    for name, color in [("Vacant", GREY), ("Within capacity", GREEN),
-                         ("Near capacity (80–100%)", YELLOW),
-                         ("Over capacity — beyond plan", RED)]:
+    # ── Legend swatches via invisible Scatter traces ──────
+    for leg_name, leg_color in [
+        ("Vacant",                   GREY),
+        ("Within capacity",          GREEN),
+        ("Near capacity (80–100%)",  YELLOW),
+        ("Over capacity",            RED),
+        ("Plan / future weeks",      FUTURE),
+    ]:
         fig.add_trace(go.Scatter(
             x=[None], y=[None], mode="markers",
-            marker=dict(size=11, color=color, symbol="square"),
-            name=name, showlegend=True, hoverinfo="skip",
+            marker=dict(size=13, color=leg_color, symbol="square"),
+            name=leg_name, showlegend=True, hoverinfo="skip",
         ))
 
-    # Period-highlight band (defaults to current week if viewing the
-    # current year) — mirrors the reference template's "Period Highlight"
-    # selector + tan vertical band.
-    hl_week = highlight_week if highlight_week else (current_week if year == CURRENT_YEAR else None)
-    if hl_week and 1 <= hl_week <= 52:
-        fig.add_vrect(
-            x0=hl_week - 1.5, x1=hl_week - 0.5,
-            fillcolor="#F4B183", opacity=0.4, line_width=0, layer="above",
-        )
+    # ── Utilisation % annotation — right of each bar ──────
+    for t in types:
+        cap_wk   = capacities.get(t, 1) / 52
+        total_dem = yd[t].sum() if not yd.empty and t in yd.columns else 0.0
+        ann_util  = total_dem / (cap_wk * 52) if cap_wk > 0 else 0.0
+        ann_color = "#C00000" if ann_util > 1.0 else "#C55A11" if ann_util >= 0.8 else "#375623"
         fig.add_annotation(
-            x=hl_week - 1, y=1.08, yref="paper", xref="x",
-            text=f"Period Highlight: Wk {hl_week}", showarrow=False,
-            font=dict(size=10, color="#C55A11", family="Arial"),
+            x=54, y=t,
+            text=f"<b>{ann_util:.0%}</b>",
+            xanchor="left", yanchor="middle", showarrow=False,
+            font=dict(size=11, family="Arial", color=ann_color),
         )
 
+    # ── Layout ────────────────────────────────────────────
+    tick_vals = list(range(0, 52, 4)) + [51]
+    tick_text = [f"Wk{v+1}" for v in tick_vals]
+
     fig.update_layout(
+        barmode="overlay",
         title=f"Lab Occupancy Gantt — {year}",
-        xaxis_title="Week",
-        yaxis_title="Lab Type",
-        height=max(280, 70 * len(types) + 170),
+        xaxis=dict(
+            title="",
+            range=[0, 58],          # extra space for util% annotations
+            tickmode="array",
+            tickvals=tick_vals,
+            ticktext=tick_text,
+            tickfont=dict(size=9),
+            showgrid=False,
+        ),
+        yaxis=dict(
+            title="Lab Type",
+            categoryorder="array",
+            categoryarray=list(reversed(types)),   # first type at top
+            tickfont=dict(size=12),
+        ),
+        height=max(300, 68 * len(types) + 190),
         font=dict(family="Arial", size=11),
         paper_bgcolor="white",
-        plot_bgcolor="white",
-        margin=dict(l=110, r=40, t=90, b=70),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.32, x=0),
+        plot_bgcolor="#FAFAFA",
+        margin=dict(l=20, r=90, t=80, b=90),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.38, x=0),
     )
+
+    # Quarter boundary lines + labels
+    for q_end in [13, 26, 39, 52]:
+        fig.add_vline(x=q_end, line_dash="dot", line_color="#C0C0C0",
+                      line_width=1.5, opacity=0.7)
+    for q_start, q_end, q_lbl in [(0,13,"Q1"),(13,26,"Q2"),(26,39,"Q3"),(39,52,"Q4")]:
+        fig.add_annotation(
+            x=(q_start + q_end) / 2, y=1.07, yref="paper", xref="x",
+            text=f"<b>{q_lbl}</b>", showarrow=False,
+            font=dict(size=10, color="#888888", family="Arial"),
+        )
+
+    # Period Highlight label badge
+    if hl_week and 1 <= hl_week <= 52:
+        fig.add_annotation(
+            x=hl_week - 0.5, y=1.13, yref="paper", xref="x",
+            text=f"◆ Period: Wk {hl_week}", showarrow=False,
+            font=dict(size=10, color="#C55A11", family="Arial"),
+            bgcolor="#FDE9D9", bordercolor="#C55A11", borderpad=4,
+        )
+
+    # Current-week dashed marker (current year only)
+    if year == CURRENT_YEAR and 1 <= current_week <= 52:
+        fig.add_vline(
+            x=current_week - 0.5,
+            line_color="#C00000", line_width=2, line_dash="dash",
+            annotation_text=f"Now — Wk {current_week}",
+            annotation_position="top left",
+            annotation_font=dict(size=9, color="#C00000"),
+        )
+
     return fig
+
 
 
 def chart_comparison_grouped(annual_a, annual_b, types_a, types_b, years,
@@ -878,7 +946,7 @@ def chart_comparison_grouped(annual_a, annual_b, types_a, types_b, years,
     fig.update_layout(barmode="group", height=440,
                       font=dict(family="Arial", size=12),
                       paper_bgcolor="white", plot_bgcolor="white",
-                      title="Annual Demand Comparison — Mechanical vs Coating Labs",
+                      title="Annual Demand Comparison — Mechanical vs Spray Lab",
                       margin=dict(b=60))
     return fig
 
@@ -931,7 +999,7 @@ def chart_util_comparison_line(wdf_a, wdf_b, types_a, types_b, years,
                   annotation_text="80%")
 
     fig.update_layout(
-        title="Monthly Utilization % — Mechanical vs Coating Labs (last 3 years)",
+        title="Monthly Utilization % — Mechanical vs Spray Lab (last 3 years)",
         xaxis_title="Month", yaxis_title="Utilization",
         yaxis_tickformat=".0%", height=420,
         font=dict(family="Arial", size=12),
@@ -1074,6 +1142,21 @@ def show_annual_summary_table(annual_totals, types, years, capacities):
           .map(_style_vacancy, subset=["Vacancy (slots/yr)"])
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.markdown("""
+    <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap;
+                margin:4px 0 14px 2px;font-size:12px;color:#444;">
+        <span style="font-weight:600;color:#666;">Status legend:</span>
+        <span><span style="display:inline-block;width:12px;height:12px;
+              background:#70AD47;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>
+              OK — utilization &lt; 80%</span>
+        <span><span style="display:inline-block;width:12px;height:12px;
+              background:#FFA500;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>
+              HIGH — utilization 80–100%</span>
+        <span><span style="display:inline-block;width:12px;height:12px;
+              background:#FF4444;border-radius:2px;margin-right:5px;vertical-align:middle;"></span>
+              OVER CAPACITY — utilization &gt; 100%</span>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def make_editable_excel(weekly_df, util_df, annual_totals, types, capacities, years, title="Lab Data"):
@@ -1242,8 +1325,8 @@ with st.sidebar:
     tool = st.radio(
         "Select Tool",
         ["🔵 Tool 1 — LCF & Creep",
-         "🟢 Tool 2 — Coating Labs",
-         "🟠 Tool 3 — Thermal Lab",
+         "🟢 Tool 2 — Spray Lab",
+         "🟠 Tool 3 — Oxidation Lab OHC",
          "🔴 Tool 4 — Comparison & PPT"],
         label_visibility="collapsed",
     )
@@ -1650,7 +1733,7 @@ if "Tool 1" in tool:
 elif "Tool 2" in tool:
     st.markdown("""
     <div class="tool-header" style="background: linear-gradient(90deg, #1F5C1A 0%, #70AD47 100%);">
-        <h2>🟢 Coating Labs Dashboard</h2>
+        <h2>🟢 Spray Lab Dashboard</h2>
         <p>Cold Spray · HVOF · Plasma — individual + combined capacity tracking</p>
     </div>
     """, unsafe_allow_html=True)
@@ -1803,7 +1886,7 @@ elif "Tool 2" in tool:
                 st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
                 editable_bytes_2 = make_editable_excel(
                     wdf_2, udf_2, annual_2, types_2, ind_caps_2, years_2,
-                    title="Coating Labs"
+                    title="Spray Lab"
                 )
                 st.download_button(
                     "⬇️ Download Editable Excel (Weekly Data + Summary)",
@@ -1838,7 +1921,7 @@ elif "Tool 2" in tool:
 elif "Tool 3" in tool:
     st.markdown("""
     <div class="tool-header" style="background: linear-gradient(90deg, #7F3F00 0%, #C55A11 100%);">
-        <h2>🟠 Tool 3 — Thermal Lab Dashboard</h2>
+        <h2>🟠 Tool 3 — Oxidation Lab OHC Dashboard</h2>
         <p>Thermal Rig occupancy planning — per-rig capacity tracking</p>
     </div>
     """, unsafe_allow_html=True)
@@ -1945,7 +2028,7 @@ elif "Tool 3" in tool:
                 st.markdown("**✏️ Editable Data Export** — download a pre-filled Excel you can edit and re-upload")
                 editable_bytes_t3 = make_editable_excel(
                     wdf_t3, udf_t3, annual_t3, types_t3, rig_caps_t3, years_t3,
-                    title="Thermal Lab"
+                    title="Oxidation Lab OHC"
                 )
                 st.download_button(
                     "⬇️ Download Editable Excel (Weekly Data + Summary)",
@@ -1960,7 +2043,7 @@ elif "Tool 3" in tool:
             st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>',
                         unsafe_allow_html=True)
             if st.button("⚡ Generate Full Excel Dashboard", key="t3_gen"):
-                with st.spinner("Generating Thermal Lab dashboard..."):
+                with st.spinner("Generating Oxidation Lab OHC dashboard..."):
                     out_t3, warns_t3 = gen_module.generate_thermal(
                         paths_t3[0], rig_caps_t3, theme_t3)
                     with open(out_t3, 'rb') as f:
@@ -2123,7 +2206,7 @@ elif "Tool 4" in tool:
                 n_panels = 3 if has_c else 2
                 panel_titles = [GROUP_A["name"], GROUP_B["name"]]
                 if has_c:
-                    panel_titles.append("Thermal Lab")
+                    panel_titles.append("Oxidation Lab OHC")
                 fig = make_subplots(rows=1, cols=n_panels, subplot_titles=panel_titles)
                 col_maps_a = ["#1F3864","#2E75B6","#9DC3E6"]
                 col_maps_b = ["#1F5C1A","#70AD47","#C6EFCE"]
@@ -2252,13 +2335,13 @@ elif "Tool 4" in tool:
                                                          THEME_COLORS[theme_name_3])
                 st.plotly_chart(fig_pies_a3, use_container_width=True)
 
-                st.subheader("🟢 Coating Labs — Process Share")
+                st.subheader("🟢 Spray Lab — Process Share")
                 _, fig_pies_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
                                                          THEME_COLORS[theme_name_3])
                 st.plotly_chart(fig_pies_b3, use_container_width=True)
 
                 if has_c3:
-                    st.subheader("🟠 Thermal Lab — Process Share")
+                    st.subheader("🟠 Oxidation Lab OHC — Process Share")
                     _, fig_pies_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
                                                              THEME_COLORS[theme_name_3])
                     st.plotly_chart(fig_pies_c3, use_container_width=True)
@@ -2292,10 +2375,10 @@ elif "Tool 4" in tool:
             with tabs4[4]:
                 st.markdown("**🔵 Mechanical Labs**")
                 show_util_table(udf_a3, types_a3, years_a3)
-                st.markdown("**🟢 Coating Labs**")
+                st.markdown("**🟢 Spray Lab**")
                 show_util_table(udf_b3, types_b3, years_b3)
                 if has_c3:
-                    st.markdown("**🟠 Thermal Lab**")
+                    st.markdown("**🟠 Oxidation Lab OHC**")
                     show_util_table(udf_c3, types_c3, years_c3)
 
             # ── Export buttons ────────────────────────────
