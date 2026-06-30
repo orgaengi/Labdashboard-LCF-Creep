@@ -367,33 +367,73 @@ def _is_monthly_block_format(path):
     return False, xl, []
 
 
+def _infer_type_from_sheet(sheet_name, allowed_types):
+    """
+    Extract a lab type from a sheet name that contains both a type label
+    and a year, e.g. "LCF 2024", "Cold Spray 2025", "HVOF 2024".
+
+    Strategy (in order):
+      1. Remove the year (20xx) and filler words, then exact-match the remainder
+      2. All words of a type appear in the remainder
+      3. Any word of a type (any length) is a substring of the remainder
+    Returns the matched canonical type string, or None.
+    """
+    import re as _re
+    year_re = _re.compile(r'20\d{2}')
+    remainder = year_re.sub('', str(sheet_name)).strip().lower()
+    # strip common filler words
+    for filler in ('data', 'lab', 'report', 'monthly', 'fy', 'year', 'sheet'):
+        remainder = remainder.replace(filler, '')
+    remainder = remainder.strip(' _-')
+
+    if not remainder:
+        return None   # sheet name was purely a year (e.g. "2024") → no type
+
+    # 1. Exact full-name match
+    for t in allowed_types:
+        if t.lower().strip() == remainder:
+            return t
+
+    # 2. All words of type present in remainder
+    for t in allowed_types:
+        t_words = t.lower().split()
+        if t_words and all(w in remainder for w in t_words):
+            return t
+
+    # 3. Any single word of the type is a substring (no length floor — covers LCF, CS, etc.)
+    for t in allowed_types:
+        for w in t.lower().split():
+            if w and w in remainder:
+                return t
+
+    return None
+
+
 def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
     """
     Parse the monthly-block format.
 
-    Each sheet = one year.
-    Each ~5-row block contains one month of data:
-        row 0: date (Timestamp) — month extracted from .month attribute
-        row 1: TOTAL RIGS RUNNING       | numeric value
-        row 2: TOTAL SLOTS AVAILABLE    | numeric value
-        row 3: TOTAL SAMPLES REMOVED    | numeric value
-        row 4: blank
+    Sheet naming conventions:
+      Single-type tool: plain year sheets "2024", "FY 2024", "YEAR 2024"
+      Multi-type tool:  type + year sheets "LCF 2024", "Cold Spray 2025"
 
-    Returns (annual_df, warns) where annual_df has columns:
-        Year | Type | Value   (long format; Value = annual sum of SAMPLES REMOVED)
-    Also embeds SLOTS_AVAILABLE so the caller can offer auto-capacity detection.
+    Each ~5-row block per month:
+        row 0: date  |  row 1: RIGS RUNNING  |  row 2: SLOTS AVAILABLE
+        row 3: SAMPLES REMOVED  |  row 4: blank
+
+    Returns (annual_df, warns) — annual_df columns: Year | Type | Value
     """
-    warns = []
-    monthly_rows = []   # one row per month per year
+    warns = []; monthly_rows = []
     import re as _re
     _YEAR_EXTRACT = _re.compile(r'(20\d{2})')
 
     for sheet in year_sheets:
         m = _YEAR_EXTRACT.search(str(sheet).strip())
         if not m:
-            warns.append(f"Sheet '{sheet}' skipped — name is not a valid year.")
+            warns.append(f"Sheet '{sheet}' skipped — no valid year found in name.")
             continue
         year = int(m.group(1))
+        sheet_type = _infer_type_from_sheet(sheet, allowed_types)
 
         try:
             raw = pd.read_excel(xl, sheet_name=sheet, header=None)
@@ -403,12 +443,10 @@ def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
 
         i = 0
         while i < len(raw):
-            row = raw.iloc[i]
+            row   = raw.iloc[i]
             cell0 = row.iloc[0]
-
-            # Detect block start = a date/timestamp cell
             month_num = None
-            if hasattr(cell0, 'month'):          # pandas Timestamp
+            if hasattr(cell0, 'month'):
                 month_num = cell0.month
             elif isinstance(cell0, str) and cell0.strip():
                 dt = pd.to_datetime(cell0, errors='coerce')
@@ -416,19 +454,18 @@ def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
                     month_num = dt.month
 
             if month_num is not None:
-                # Read next up to 4 rows for this block
                 block = {'Year': year, 'Month': month_num,
-                         'Rigs': None, 'Slots': None, 'Removed': None}
+                         'Rigs': None, 'Slots': None, 'Removed': None,
+                         'SheetType': sheet_type}
                 j = i + 1
                 while j < len(raw) and j <= i + 4:
-                    r2   = raw.iloc[j]
-                    lbl  = str(r2.iloc[0]).upper().strip() if not pd.isna(r2.iloc[0]) else ""
-                    val  = r2.iloc[1] if len(r2) > 1 else None
+                    r2  = raw.iloc[j]
+                    lbl = str(r2.iloc[0]).upper().strip() if not pd.isna(r2.iloc[0]) else ""
+                    val = r2.iloc[1] if len(r2) > 1 else None
                     try:
                         val = float(val) if val is not None and not pd.isna(val) else None
                     except (ValueError, TypeError):
                         val = None
-
                     if 'SAMPLES REMOVED' in lbl and val is not None:
                         block['Removed'] = val
                     elif 'SLOTS AVAILABLE' in lbl and val is not None:
@@ -436,7 +473,6 @@ def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
                     elif 'RIGS RUNNING' in lbl and val is not None:
                         block['Rigs'] = val
                     j += 1
-
                 if block['Removed'] is not None:
                     monthly_rows.append(block)
                 i = j
@@ -448,70 +484,72 @@ def _parse_monthly_blocks(xl, year_sheets, allowed_types, source_path=None):
 
     detail = pd.DataFrame(monthly_rows)
 
-    # ── Assign type name ──────────────────────────────────
-    # If exactly one allowed_type, all data belongs to it.
-    if len(allowed_types) == 1:
-        type_name = allowed_types[0]
+    # ── Determine type assignment ─────────────────────────────────────────────
+    has_sheet_types = (
+        'SheetType' in detail.columns and
+        detail['SheetType'].notna().any() and
+        len(allowed_types) > 1
+    )
+
+    if has_sheet_types:
+        # Multi-type: each sheet carries a type label (e.g. "LCF 2024")
+        unmatched = detail['SheetType'].isna().sum()
+        if unmatched:
+            detail['SheetType'] = detail['SheetType'].fillna(allowed_types[0])
+            warns.append(
+                f"{unmatched} block(s) had no recognisable type in the sheet name "
+                f"— assigned to '{allowed_types[0]}'. "
+                "Rename sheets to include the lab type (e.g. 'LCF 2024', 'Creep 2024')."
+            )
+        annual = (
+            detail.groupby(['Year', 'SheetType'])['Removed']
+            .sum().reset_index()
+            .rename(columns={'Removed': 'Value', 'SheetType': 'Type'})
+        )
+
+    elif len(allowed_types) == 1:
+        # Single-type tool — original OHC path
+        annual = (detail.groupby('Year')['Removed']
+                  .sum().reset_index().rename(columns={'Removed': 'Value'}))
+        annual['Type'] = allowed_types[0]
+
     else:
-        # Try to infer the lab type from the source filename
-        # e.g. "Thermal_Lab.xlsx" -> matches "Thermal Rig"
+        # Multiple types but no sheet labels — fall back to filename inference
         type_name = None
         if source_path:
             fname_lower = os.path.basename(source_path).lower()
-            fname_clean = fname_lower.replace("_", " ").replace("-", " ")
+            fname_clean = fname_lower.replace('_', ' ').replace('-', ' ')
             for t in allowed_types:
-                t_words = t.lower().split()
-                if all(w in fname_clean for w in t_words):
-                    type_name = t
-                    break
+                if all(w in fname_clean for w in t.lower().split()):
+                    type_name = t; break
             if type_name is None:
-                # Try single significant word match (>=4 chars)
                 for t in allowed_types:
                     for w in t.lower().split():
                         if len(w) >= 4 and w in fname_clean:
-                            type_name = t
-                            break
-                    if type_name:
-                        break
-
+                            type_name = t; break
+                    if type_name: break
         if type_name:
-            warns.append(
-                f"Multiple lab types possible {allowed_types}. "
-                f"Inferred '{type_name}' from filename."
-            )
+            warns.append(f"Inferred type '{type_name}' from filename.")
         else:
-            # Default: use the first allowed type and warn
             type_name = allowed_types[0]
             warns.append(
-                f"Multiple lab types expected {allowed_types}. "
-                f"All monthly-block data assigned to '{type_name}'. "
-                "Upload one file per lab type for best results, "
-                "or include the lab type name in the filename."
+                f"Could not infer lab type. All data assigned to '{type_name}'. "
+                "Add the type name to each sheet (e.g. 'LCF 2024', 'Creep 2024')."
             )
+        annual = (detail.groupby('Year')['Removed']
+                  .sum().reset_index().rename(columns={'Removed': 'Value'}))
+        annual['Type'] = type_name
 
-    # ── Aggregate to annual totals ────────────────────────
-    annual = (detail.groupby('Year')['Removed']
-              .sum()
-              .reset_index()
-              .rename(columns={'Removed': 'Value'}))
-    annual['Type']  = type_name
+    # ── Partial-year warnings ─────────────────────────────────────────────────
+    partial = [f"{yr} ({len(g)} months)" for yr, g in detail.groupby('Year') if len(g) < 12]
+    if partial:
+        warns.append(f"Partial year(s) detected: {', '.join(partial)}.")
+
     annual['Year']  = annual['Year'].astype(int)
     annual['Value'] = annual['Value'].fillna(0)
-
-    # Attach slot totals as metadata (for auto-capacity suggestion)
-    slot_totals = detail.groupby('Year')['Slots'].sum().to_dict()
-
-    partial_years = []
-    for yr, grp in detail.groupby('Year'):
-        if len(grp) < 12:
-            partial_years.append(f"{yr} ({len(grp)} months)")
-    if partial_years:
-        warns.append(
-            f"Partial year(s) detected: {', '.join(partial_years)}. "
-            "Totals reflect only the months present in the file."
-        )
-
     return annual[['Year', 'Type', 'Value']], warns
+
+
 
 
 def load_and_filter(path, allowed_types):

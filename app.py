@@ -911,6 +911,90 @@ def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week
 
 
 
+def generate_comparison_html(fig_list, generated_at):
+    """
+    Build a self-contained, interactive HTML report for the Comparison Tool.
+
+    fig_list : list of (section_title, chart_label, fig) — None figs are skipped.
+    Returns  : HTML string (call .encode('utf-8') for st.download_button).
+    """
+    import plotly.io as pio
+
+    header = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GE Vernova Lab — Comparison Dashboard</title>
+<style>
+  *{{box-sizing:border-box;}}
+  body{{font-family:Arial,sans-serif;background:#f0f2f6;margin:0;color:#333;}}
+  .hdr{{background:linear-gradient(135deg,#1F3864 0%,#2E75B6 100%);
+        color:#fff;padding:26px 48px;}}
+  .hdr h1{{margin:0;font-size:24px;font-weight:700;}}
+  .hdr p{{margin:5px 0 0;font-size:13px;opacity:.82;}}
+  .wrap{{padding:24px 40px 44px;max-width:1440px;margin:0 auto;}}
+  .sec{{margin-bottom:28px;}}
+  .sec-title{{font-size:16px;font-weight:700;color:#1F3864;
+              border-left:4px solid #2E75B6;padding-left:10px;
+              margin:0 0 14px;}}
+  .card{{background:#fff;border-radius:10px;padding:16px 20px;
+         box-shadow:0 2px 10px rgba(0,0,0,.07);margin-bottom:18px;}}
+  .clabel{{font-size:12px;font-weight:600;color:#666;
+           letter-spacing:.4px;margin-bottom:6px;}}
+  footer{{text-align:center;padding:24px;color:#bbb;font-size:12px;
+          border-top:1px solid #e0e0e0;margin-top:8px;}}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <h1>🔬 GE Vernova Lab &mdash; Comparison Dashboard</h1>
+  <p>Generated: {generated_at} &nbsp;|&nbsp; All charts are fully interactive</p>
+</div>
+<div class="wrap">
+"""
+    parts        = [header]
+    first_js     = True
+    cur_section  = None
+
+    for section_title, chart_label, fig in fig_list:
+        if fig is None:
+            continue
+        # Open a new section block when the section changes
+        if section_title != cur_section:
+            if cur_section is not None:
+                parts.append("</div>")        # close previous .sec
+            parts.append(
+                f'<div class="sec"><p class="sec-title">{section_title}</p>'
+            )
+            cur_section = section_title
+
+        include_js = "cdn" if first_js else False
+        chart_html = pio.to_html(
+            fig, full_html=False,
+            include_plotlyjs=include_js,
+            config={"responsive": True, "displayModeBar": True},
+        )
+        parts.append(
+            f'<div class="card">'
+            f'<div class="clabel">{chart_label}</div>'
+            f'{chart_html}'
+            f'</div>'
+        )
+        first_js = False
+
+    if cur_section is not None:
+        parts.append("</div>")    # close last .sec
+
+    parts.append(
+        '</div>\n'
+        '<footer>GE Vernova Kuwait &mdash; Lab Planning Dashboard Suite &nbsp;|&nbsp;'
+        ' Built with Streamlit &amp; Plotly</footer>\n'
+        '</body></html>'
+    )
+    return "".join(parts)
+
+
 def chart_comparison_grouped(annual_a, annual_b, types_a, types_b, years,
                               cap_a_total, cap_b_total):
     """Grouped bar: both groups side by side per year."""
@@ -2346,6 +2430,29 @@ elif "Tool 4" in tool:
             g_yr3 = CURRENT_YEAR if CURRENT_YEAR in [int(y) for y in years_3] else int(max(years_3))
             g_wk3 = CURRENT_WEEK if g_yr3 == CURRENT_YEAR else 52
 
+            # ── Pre-generate figures used in HTML export ──────────────────
+            # Pie charts have no in-tab widget dependencies — build once here.
+            _, fig_pies_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
+                                                     THEME_COLORS[theme_name_3],
+                                                     lab_name="Mechanical Labs")
+            _, fig_pies_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
+                                                     THEME_COLORS[theme_name_3],
+                                                     lab_name="Spray Lab")
+            fig_pies_c3 = None
+            if has_c3:
+                _, fig_pies_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
+                                                         THEME_COLORS[theme_name_3],
+                                                         lab_name="Oxidation Lab OHC")
+
+            # Gantt export versions use the default current week (no interactive selector).
+            fig_ga3_exp = chart_gantt(wdf_a3, types_a3, caps_a3, g_yr3, g_wk3,
+                                       highlight_week=g_wk3, lab_name="Mechanical Labs")
+            fig_gb3_exp = chart_gantt(wdf_b3, types_b3, caps_b3, g_yr3, g_wk3,
+                                       highlight_week=g_wk3, lab_name="Spray Lab")
+            fig_gc3_exp = (chart_gantt(wdf_c3, types_c3, caps_c3, g_yr3, g_wk3,
+                                        highlight_week=g_wk3, lab_name="Oxidation Lab OHC")
+                           if has_c3 else None)
+
             # ── TABS ─────────────────────────────────────
             tabs4 = st.tabs(["📊 Comparison Charts", "🥧 YoY Pie Charts",
                               "📈 Utilization Trend", "🗓 Gantt", "📋 Data Tables"])
@@ -2355,22 +2462,13 @@ elif "Tool 4" in tool:
 
             with tabs4[1]:
                 st.subheader("🔵 Mechanical Labs — Process Share")
-                _, fig_pies_a3 = chart_yoy_bar_and_pie(annual_a3, types_a3, years_a3,
-                                                         THEME_COLORS[theme_name_3],
-                                                         lab_name="Mechanical Labs")
                 st.plotly_chart(fig_pies_a3, use_container_width=True)
 
                 st.subheader("🟢 Spray Lab — Process Share")
-                _, fig_pies_b3 = chart_yoy_bar_and_pie(annual_b3, types_b3, years_b3,
-                                                         THEME_COLORS[theme_name_3],
-                                                         lab_name="Spray Lab")
                 st.plotly_chart(fig_pies_b3, use_container_width=True)
 
                 if has_c3:
                     st.subheader("🟠 Oxidation Lab OHC — Process Share")
-                    _, fig_pies_c3 = chart_yoy_bar_and_pie(annual_c3, types_c3, years_c3,
-                                                             THEME_COLORS[theme_name_3],
-                                                             lab_name="Oxidation Lab OHC")
                     st.plotly_chart(fig_pies_c3, use_container_width=True)
 
             with tabs4[2]:
@@ -2412,7 +2510,7 @@ elif "Tool 4" in tool:
             st.markdown("---")
             st.markdown('<div class="section-label">💾 Export Dashboards</div>',
                         unsafe_allow_html=True)
-            exp_col1, exp_col2 = st.columns(2)
+            exp_col1, exp_col2, exp_col3 = st.columns(3)
 
             with exp_col1:
                 if st.button("⚡ Generate Full Excel Dashboard", key="t4_gen"):
@@ -2455,6 +2553,51 @@ elif "Tool 4" in tool:
                             st.error(f"❌ {e}")
                         except Exception as e:
                             st.error(f"❌ PPT error: {str(e)[:200]}")
+
+            with exp_col3:
+                st.markdown("**🌐 Interactive HTML Report**")
+                st.caption(
+                    "All charts in one self-contained file — "
+                    "fully interactive, shareable without Streamlit."
+                )
+                from datetime import datetime as _dt
+                _gen_at = _dt.now().strftime("%d %b %Y, %H:%M")
+                _html_figs = [
+                    # (section_title, chart_label, fig)
+                    ("📊 Annual Demand Comparison",
+                     "All Lab Groups — Year-on-Year Demand",
+                     fig_cmp3),
+                    ("🥧 Process-wise Demand Share",
+                     "🔵 Mechanical Labs",
+                     fig_pies_a3),
+                    ("🥧 Process-wise Demand Share",
+                     "🟢 Spray Lab",
+                     fig_pies_b3),
+                    ("🥧 Process-wise Demand Share",
+                     "🟠 Oxidation Lab OHC",
+                     fig_pies_c3),
+                    ("📈 Monthly Utilization Trend",
+                     "All Lab Groups — Last 3 Years",
+                     fig_util3),
+                    ("🗓 Gantt — Lab Occupancy",
+                     f"🔵 Mechanical Labs  (Year {g_yr3}, Week {g_wk3})",
+                     fig_ga3_exp),
+                    ("🗓 Gantt — Lab Occupancy",
+                     f"🟢 Spray Lab  (Year {g_yr3}, Week {g_wk3})",
+                     fig_gb3_exp),
+                    ("🗓 Gantt — Lab Occupancy",
+                     f"🟠 Oxidation Lab OHC  (Year {g_yr3}, Week {g_wk3})",
+                     fig_gc3_exp),
+                ]
+                _html_bytes = generate_comparison_html(_html_figs, _gen_at).encode("utf-8")
+                st.download_button(
+                    "⬇️ Download Lab_Comparison_Dashboard.html",
+                    data=_html_bytes,
+                    file_name="Lab_Comparison_Dashboard.html",
+                    mime="text/html",
+                    key="t4_html_dl",
+                )
+                st.success("✅ HTML ready — open in any browser!")
     else:
         st.info("👆 Upload 1–3 Excel files — one combined file or one per lab group (Mechanical, Coating, Thermal).")
 
