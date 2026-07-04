@@ -49,10 +49,9 @@ st.markdown("""
     section[data-testid="stSidebar"] .stRadio label { color: white !important; }
     section[data-testid="stSidebar"] p { color: #BDD7EE !important; font-size: 13px; }
 
-    /* ── Chat input: override the sidebar wildcard rule above ─────────────── */
-    section[data-testid="stSidebar"] .stTextInput input,
-    section[data-testid="stSidebar"] .stTextInput > div > div > input,
-    section[data-testid="stSidebar"] input[type="text"] {
+    /* ── Chat input (st.chat_input / stChatInput): override sidebar white-text ── */
+    section[data-testid="stSidebar"] div[data-testid="stChatInput"] textarea,
+    section[data-testid="stSidebar"] div[data-testid="stChatInput"] input {
         background-color: #FFFFFF !important;
         color: #1F3864 !important;
         caret-color: #1F3864 !important;
@@ -60,16 +59,20 @@ st.markdown("""
         border-radius: 8px !important;
         font-size: 13px !important;
     }
-    section[data-testid="stSidebar"] .stTextInput input::placeholder,
-    section[data-testid="stSidebar"] input[type="text"]::placeholder {
+    section[data-testid="stSidebar"] div[data-testid="stChatInput"] textarea::placeholder,
+    section[data-testid="stSidebar"] div[data-testid="stChatInput"] input::placeholder {
         color: #8AAAD4 !important;
         opacity: 1 !important;
     }
-    section[data-testid="stSidebar"] .stTextInput input:focus,
-    section[data-testid="stSidebar"] input[type="text"]:focus {
+    section[data-testid="stSidebar"] div[data-testid="stChatInput"] textarea:focus,
+    section[data-testid="stSidebar"] div[data-testid="stChatInput"] input:focus {
         border-color: #5BA3E0 !important;
         box-shadow: 0 0 0 2px rgba(91,163,224,0.3) !important;
         outline: none !important;
+    }
+    /* Chat input send button override */
+    section[data-testid="stSidebar"] div[data-testid="stChatInput"] button {
+        color: #1F3864 !important;
     }
 
     /* Tool headers */
@@ -147,18 +150,30 @@ st.markdown("""
         border-radius: 8px !important;
     }
 
-    /* Chat bubbles */
-    .chat-user {
-        background: #1F3864; color: white;
+    /* Chat bubbles — sidebar-specific selectors beat the wildcard rule */
+    section[data-testid="stSidebar"] .chat-user {
+        background: #1F3864 !important; color: white !important;
         padding: 8px 12px; border-radius: 12px 12px 2px 12px;
-        margin: 4px 0; font-size: 12px; max-width: 92%;
+        margin: 4px 0; font-size: 13px; max-width: 92%;
         margin-left: auto; text-align: right;
     }
-    .chat-bot {
-        background: #E8F0FE; color: #1F3864;
+    section[data-testid="stSidebar"] .chat-user b,
+    section[data-testid="stSidebar"] .chat-user strong {
+        color: white !important;
+    }
+    section[data-testid="stSidebar"] .chat-bot {
+        background: #E8F0FE !important; color: #1F3864 !important;
         padding: 8px 12px; border-radius: 12px 12px 12px 2px;
-        margin: 4px 0; font-size: 12px; max-width: 92%;
+        margin: 4px 0; font-size: 13px; max-width: 92%;
         border-left: 3px solid #2E75B6;
+    }
+    section[data-testid="stSidebar"] .chat-bot b,
+    section[data-testid="stSidebar"] .chat-bot strong {
+        color: #1F3864 !important;
+    }
+    section[data-testid="stSidebar"] .chat-wrap code {
+        background: #DDE6F5; padding: 1px 5px; border-radius: 3px;
+        font-size: 11px; color: #1F3864 !important;
     }
     .chat-wrap { max-height: 320px; overflow-y: auto; padding: 4px; }
 
@@ -481,12 +496,14 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors, lab_name=""):
     fig_bar.update_layout(
         barmode="group",
         title=f"Year-on-Year Demand{title_suffix}",
+        title_font=dict(weight="bold"),
         xaxis=dict(type="category", title="Year",
                    tickmode="array", tickvals=[str(y) for y in years],
                    ticktext=[str(y) for y in years]),
         yaxis_title="Samples/Year",
         legend=dict(orientation="h", yanchor="top", y=-0.15,
-                    x=0.5, xanchor="center"),
+                    x=0.5, xanchor="center",
+                    font=dict(size=14)),
         height=460, plot_bgcolor="white", paper_bgcolor="white",
         font=dict(family="Arial", size=11), margin=dict(t=50, b=110, r=20),
         uniformtext=dict(minsize=8, mode="hide"),
@@ -597,6 +614,7 @@ def chart_yoy_bar_and_pie(annual_totals, types, years, colors, lab_name=""):
 
     fig_pies.update_layout(
         title=f"Process-wise Demand Share (%) by Year{title_suffix}",
+        title_font=dict(weight="bold"),
         height=max(340, 300 * NROWS + bottom_margin),
         showlegend=False,
         paper_bgcolor="white",
@@ -663,11 +681,14 @@ def chart_capacity_bar(weekly_df, types, capacities, years, lab_name=""):
     fig.update_layout(
         barmode="group",
         title=f"Average Weekly Demand vs Capacity{title_suffix}",
+        title_font=dict(weight="bold"),
         xaxis=dict(type="category", title="Lab Type"),
         yaxis=dict(title="Weekly Units", range=[0, y_top]),
         height=460, plot_bgcolor="white", paper_bgcolor="white",
         font=dict(family="Arial", size=11),
-        legend=dict(orientation="h", yanchor="top", y=-0.15, x=0),
+        legend=dict(orientation="h", yanchor="top", y=-0.15,
+                    x=0.5, xanchor="center",
+                    font=dict(size=14)),
         margin=dict(b=100, t=60, r=20),
         uniformtext=dict(minsize=8, mode="hide"),
         # bargap = gap between different Lab Type categories.
@@ -685,7 +706,10 @@ def chart_utilization_line(util_df, types, years, colors, lab_name=""):
     """Monthly utilization line chart with 100%/80% reference lines."""
     months = ["Jan","Feb","Mar","Apr","May","Jun",
               "Jul","Aug","Sep","Oct","Nov","Dec"]
-    line_colors = ["#1F3864","#2E75B6","#70AD47","#FF4444","#FFD700","#9DC3E6"]
+    # Distinct per-type colors + per-year dash/marker combos for easy identification
+    type_colors = ["#1F3864","#C00000","#375623","#7030A0","#C55A11","#2E75B6"]
+    dash_seq    = ["solid", "dash", "dot", "longdash", "dashdot", "longdashdot"]
+    marker_seq  = ["circle", "square", "diamond", "triangle-up", "cross", "star"]
 
     fig = go.Figure()
     for yi, year in enumerate(years):
@@ -697,11 +721,12 @@ def chart_utilization_line(util_df, types, years, colors, lab_name=""):
             fig.add_trace(go.Scatter(
                 x=months, y=monthly,
                 name=f"{t} ({year})",
-                line=dict(color=line_colors[ti % len(line_colors)],
-                          width=2,
-                          dash="solid" if yi == 0 else "dash"),
+                line=dict(color=type_colors[ti % len(type_colors)],
+                          width=2.5,
+                          dash=dash_seq[min(yi, len(dash_seq)-1)]),
                 mode="lines+markers",
-                marker=dict(size=6),
+                marker=dict(size=7,
+                            symbol=marker_seq[min(yi, len(marker_seq)-1)]),
                 hovertemplate=f"<b>{t} ({year})</b><br>%{{x}}: %{{y:.1%}}<extra></extra>",
             ))
 
@@ -722,6 +747,7 @@ def chart_utilization_line(util_df, types, years, colors, lab_name=""):
     title_suffix_u = f" — {lab_name}" if lab_name else ""
     fig.update_layout(
         title=f"Monthly Utilization Trend{title_suffix_u}",
+        title_font=dict(weight="bold"),
         xaxis_title=None,   # "Month" removed — labels (Jan–Dec) are self-explanatory
                             # and prevented overlap with the multi-row legend below
         yaxis_title="Utilization",
@@ -730,7 +756,7 @@ def chart_utilization_line(util_df, types, years, colors, lab_name=""):
         font=dict(family="Arial", size=12),
         legend=dict(orientation="h", yanchor="top", y=legend_y,
                     x=0.5, xanchor="center",
-                    font=dict(size=10)),
+                    font=dict(size=14)),
         margin=dict(b=margin_b),
     )
     fig.update_xaxes(showgrid=False)
@@ -848,50 +874,57 @@ def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week
         )
 
     # ── Layout ────────────────────────────────────────────
-    tick_vals = list(range(0, 52, 4)) + [51]
+    tick_vals = list(range(0, 52, 2))
     tick_text = [f"Wk{v+1}" for v in tick_vals]
 
     fig.update_layout(
         barmode="overlay",
         title=f"Lab Occupancy Gantt — {year}" + (f" — {lab_name}" if lab_name else ""),
+        title_font=dict(weight="bold"),
         xaxis=dict(
             title="",
             range=[0, 58],          # extra space for util% annotations
             tickmode="array",
             tickvals=tick_vals,
             ticktext=tick_text,
-            tickfont=dict(size=9),
+            tickfont=dict(size=8),
             showgrid=False,
         ),
         yaxis=dict(
-            title="Lab Type",
+            title="",
             categoryorder="array",
             categoryarray=list(reversed(types)),   # first type at top
-            tickfont=dict(size=12),
+            tickfont=dict(size=13, color="#333"),
         ),
-        height=max(300, 68 * len(types) + 190),
+        height=max(320, 75 * len(types) + 200),
         font=dict(family="Arial", size=11),
         paper_bgcolor="white",
         plot_bgcolor="#FAFAFA",
-        margin=dict(l=20, r=90, t=80, b=90),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.38, x=0),
+        margin=dict(l=20, r=100, t=80, b=90),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.38,
+                    x=0.5, xanchor="center",
+                    font=dict(size=14)),
     )
 
-    # Quarter boundary lines + labels
+    # Quarter boundary lines + labels (below title area)
+    Q_Y = 1.08
     for q_end in [13, 26, 39, 52]:
-        fig.add_vline(x=q_end, line_dash="dot", line_color="#C0C0C0",
-                      line_width=1.5, opacity=0.7)
-    for q_start, q_end, q_lbl in [(0,13,"Q1"),(13,26,"Q2"),(26,39,"Q3"),(39,52,"Q4")]:
+        fig.add_vline(x=q_end, line_dash="dot", line_color="#A0A0A0",
+                      line_width=1.5, opacity=0.8)
+    for q_start, q_end, q_lbl, q_c in [
+        (0, 13, "Q1", "#4472C4"), (13, 26, "Q2", "#2E75B6"),
+        (26, 39, "Q3", "#1F4E79"), (39, 52, "Q4", "#264478"),
+    ]:
         fig.add_annotation(
-            x=(q_start + q_end) / 2, y=1.07, yref="paper", xref="x",
+            x=(q_start + q_end) / 2, y=Q_Y, yref="paper", xref="x",
             text=f"<b>{q_lbl}</b>", showarrow=False,
-            font=dict(size=10, color="#888888", family="Arial"),
+            font=dict(size=11, color=q_c, family="Arial"),
         )
 
     # Period Highlight label badge
     if hl_week and 1 <= hl_week <= 52:
         fig.add_annotation(
-            x=hl_week - 0.5, y=1.13, yref="paper", xref="x",
+            x=hl_week - 0.5, y=1.15, yref="paper", xref="x",
             text=f"◆ Period: Wk {hl_week}", showarrow=False,
             font=dict(size=10, color="#C55A11", family="Arial"),
             bgcolor="#FDE9D9", bordercolor="#C55A11", borderpad=4,
@@ -901,14 +934,97 @@ def chart_gantt(weekly_df, types, capacities, year, current_week, highlight_week
     if year == CURRENT_YEAR and 1 <= current_week <= 52:
         fig.add_vline(
             x=current_week - 0.5,
-            line_color="#C00000", line_width=2, line_dash="dash",
+            line_color="#C00000", line_width=3, line_dash="dash",
             annotation_text=f"Now — Wk {current_week}",
             annotation_position="top left",
-            annotation_font=dict(size=9, color="#C00000"),
+            annotation_font=dict(size=10, color="#C00000", family="Arial"),
         )
 
     return fig
 
+
+
+def generate_tool_html(tool_name, tool_color, fig_list, generated_at):
+    """
+    Build a self-contained interactive HTML report for a single tool.
+
+    fig_list : list of (section_title, chart_label, fig) — None figs are skipped.
+    Returns  : HTML string.
+    """
+    import plotly.io as pio
+    header = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{tool_name} — Dashboard</title>
+<style>
+  *{{box-sizing:border-box;}}
+  body{{font-family:Arial,sans-serif;background:#f0f2f6;margin:0;color:#333;}}
+  .hdr{{background:linear-gradient(135deg,{tool_color} 0%,#2E75B6 100%);
+        color:#fff;padding:26px 48px;}}
+  .hdr h1{{margin:0;font-size:24px;font-weight:700;}}
+  .hdr p{{margin:5px 0 0;font-size:13px;opacity:.82;}}
+  .wrap{{padding:24px 40px 44px;max-width:1440px;margin:0 auto;}}
+  .sec{{margin-bottom:28px;}}
+  .sec-title{{font-size:16px;font-weight:700;color:{tool_color};
+              border-left:4px solid #2E75B6;padding-left:10px;
+              margin:0 0 14px;}}
+   .card{{background:#fff;border-radius:10px;padding:16px 20px;
+          box-shadow:0 2px 10px rgba(0,0,0,.07);margin-bottom:18px;
+          overflow:hidden;}}
+   .card .js-plotly-plot,.card .plot-container{{max-width:100%;}}
+   .clabel{{font-size:12px;font-weight:600;color:#666;
+            letter-spacing:.4px;margin-bottom:6px;}}
+   footer{{text-align:center;padding:24px;color:#bbb;font-size:12px;
+           border-top:1px solid #e0e0e0;margin-top:30px;clear:both;}}
+</style>
+</head>
+<body>
+<div class="hdr">
+  <h1>{tool_name}</h1>
+  <p>Generated: {generated_at} &nbsp;|&nbsp; All charts are fully interactive</p>
+</div>
+<div class="wrap">
+"""
+    parts        = [header]
+    first_js     = True
+    cur_section  = None
+
+    for section_title, chart_label, fig in fig_list:
+        if fig is None:
+            continue
+        if section_title != cur_section:
+            if cur_section is not None:
+                parts.append("</div>")
+            parts.append(
+                f'<div class="sec"><p class="sec-title">{section_title}</p>'
+            )
+            cur_section = section_title
+
+        include_js = "cdn" if first_js else False
+        chart_html = pio.to_html(
+            fig, full_html=False,
+            include_plotlyjs=include_js,
+            config={"responsive": True, "displayModeBar": True},
+        )
+        parts.append(
+            f'<div class="card">'
+            f'<div class="clabel">{chart_label}</div>'
+            f'{chart_html}'
+            f'</div>'
+        )
+        first_js = False
+
+    if cur_section is not None:
+        parts.append("</div>")
+
+    parts.append(
+        '</div>\n'
+        '<footer>GE Vernova Kuwait &mdash; Lab Planning Dashboard Suite</footer>\n'
+        '</body></html>'
+    )
+    return "".join(parts)
 
 
 def generate_comparison_html(fig_list, generated_at):
@@ -938,12 +1054,14 @@ def generate_comparison_html(fig_list, generated_at):
   .sec-title{{font-size:16px;font-weight:700;color:#1F3864;
               border-left:4px solid #2E75B6;padding-left:10px;
               margin:0 0 14px;}}
-  .card{{background:#fff;border-radius:10px;padding:16px 20px;
-         box-shadow:0 2px 10px rgba(0,0,0,.07);margin-bottom:18px;}}
-  .clabel{{font-size:12px;font-weight:600;color:#666;
-           letter-spacing:.4px;margin-bottom:6px;}}
-  footer{{text-align:center;padding:24px;color:#bbb;font-size:12px;
-          border-top:1px solid #e0e0e0;margin-top:8px;}}
+   .card{{background:#fff;border-radius:10px;padding:16px 20px;
+          box-shadow:0 2px 10px rgba(0,0,0,.07);margin-bottom:18px;
+          overflow:hidden;}}
+   .card .js-plotly-plot,.card .plot-container{{max-width:100%;}}
+   .clabel{{font-size:12px;font-weight:600;color:#666;
+            letter-spacing:.4px;margin-bottom:6px;}}
+   footer{{text-align:center;padding:24px;color:#bbb;font-size:12px;
+           border-top:1px solid #e0e0e0;margin-top:30px;clear:both;}}
 </style>
 </head>
 <body>
@@ -1008,7 +1126,6 @@ def chart_comparison_grouped(annual_a, annual_b, types_a, types_b, years,
         vals = [annual_a[int(y)].get(t, 0) for y in years]
         fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
                              marker_color=col_map_a[ti % 3],
-                             legendgroup="A",
                              text=[f"{v:.0f}" for v in vals],
                              textposition="outside"), row=1, col=1)
 
@@ -1016,7 +1133,6 @@ def chart_comparison_grouped(annual_a, annual_b, types_a, types_b, years,
         vals = [annual_b[int(y)].get(t, 0) for y in years]
         fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
                              marker_color=col_map_b[ti % 3],
-                             legendgroup="B",
                              text=[f"{v:.0f}" for v in vals],
                              textposition="outside"), row=1, col=2)
 
@@ -1043,7 +1159,11 @@ def chart_comparison_grouped(annual_a, annual_b, types_a, types_b, years,
                       font=dict(family="Arial", size=12),
                       paper_bgcolor="white", plot_bgcolor="white",
                       title="Annual Demand Comparison — Mechanical vs Spray Lab",
-                      margin=dict(b=60))
+                      title_font=dict(weight="bold"),
+                      legend=dict(orientation="h", yanchor="bottom", y=-0.35,
+                                  x=0.5, xanchor="center",
+                                  font=dict(size=14)),
+                      margin=dict(b=100))
     return fig
 
 
@@ -1054,7 +1174,11 @@ def chart_util_comparison_line(wdf_a, wdf_b, types_a, types_b, years,
               "Jul","Aug","Sep","Oct","Nov","Dec"]
     fig = go.Figure()
 
+    dash_seq   = ["solid", "dash", "dot", "longdash"]
+    marker_seq = ["circle", "square", "diamond", "triangle-up"]
     for yi, year in enumerate(list(years)[-3:]):  # last 3 years for clarity
+        dash   = dash_seq[min(yi, len(dash_seq)-1)]
+        msym   = marker_seq[min(yi, len(marker_seq)-1)]
         # Group A
         yd_a = wdf_a[wdf_a["Year"] == year].copy()
         yd_a["_m"] = yd_a["Week"].apply(core.week_to_month)
@@ -1067,9 +1191,8 @@ def chart_util_comparison_line(wdf_a, wdf_b, types_a, types_b, years,
 
         fig.add_trace(go.Scatter(
             x=months, y=util_a, name=f"Mechanical {year}",
-            line=dict(color="#1A4E8A", width=2,
-                      dash="solid" if yi == 0 else "dash"),
-            mode="lines+markers", marker=dict(size=5),
+            line=dict(color="#1A4E8A", width=2.5, dash=dash),
+            mode="lines+markers", marker=dict(size=7, symbol=msym),
         ))
 
         # Group B
@@ -1084,9 +1207,8 @@ def chart_util_comparison_line(wdf_a, wdf_b, types_a, types_b, years,
 
         fig.add_trace(go.Scatter(
             x=months, y=util_b, name=f"Coating {year}",
-            line=dict(color="#1F5C1A", width=2,
-                      dash="solid" if yi == 0 else "dash"),
-            mode="lines+markers", marker=dict(size=5),
+            line=dict(color="#1F5C1A", width=2.5, dash=dash),
+            mode="lines+markers", marker=dict(size=7, symbol=msym),
         ))
 
     fig.add_hline(y=1.0, line_dash="dot", line_color="#FF4444",
@@ -1096,11 +1218,14 @@ def chart_util_comparison_line(wdf_a, wdf_b, types_a, types_b, years,
 
     fig.update_layout(
         title="Monthly Utilization % — Mechanical vs Spray Lab (last 3 years)",
+        title_font=dict(weight="bold"),
         xaxis_title="Month", yaxis_title="Utilization",
         yaxis_tickformat=".0%", height=420,
         font=dict(family="Arial", size=12),
         paper_bgcolor="white", plot_bgcolor="white",
-        legend=dict(orientation="h", yanchor="bottom", y=-0.4),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.4,
+                    x=0.5, xanchor="center",
+                    font=dict(size=14)),
         margin=dict(b=120),
     )
     return fig
@@ -1470,26 +1595,34 @@ with st.sidebar:
         if any(kw in q for kw in ["utilization", "utilisation", "util"]):
             lab  = _find_lab_type(q, all_types)
             year = _find_year_in_q(q)
+            def _ann_util(t, tk, yr):
+                annual_d = session_data[tk]["annual"]
+                cap = session_data[tk]["capacities"].get(t, 0)
+                if yr and yr in annual_d:
+                    dem = annual_d[yr].get(t, 0)
+                else:
+                    vals = [annual_d[y].get(t, 0) for y in annual_d]
+                    dem = sum(vals) / len(vals) if vals else 0
+                return dem / cap if cap > 0 else 0
             if lab:
-                tk      = all_types_map[lab]
-                udf     = session_data[tk]["util_df"]
-                yr_data = udf[udf["Year"] == year] if year else udf
-                if yr_data.empty or lab not in yr_data.columns:
-                    return f"No utilization data found for **{lab}**{' in '+str(year) if year else ''}."
-                peak   = yr_data[lab].max()
-                avg    = yr_data[lab].mean()
-                status = "🔴 OVERLOADED" if peak > 1 else "🟡 Near Cap" if peak >= 0.8 else "🟢 Healthy"
-                yr_str = f" in {year}" if year else " (all years)"
-                return (f"**{lab}** utilization{yr_str}:\n"
-                        f"• Peak: **{peak:.1%}** | Avg: **{avg:.1%}**\n"
+                tk   = all_types_map[lab]
+                util = _ann_util(lab, tk, year)
+                yr_str = f" in {year}" if year else ""
+                status = "🔴 OVERLOADED" if util > 1 else "🟡 Near Cap" if util >= 0.8 else "🟢 Healthy"
+                peak_w = session_data[tk]["util_df"][lab].max()
+                return (f"**{lab}** utilization{yr_str}: **{util:.1%}**\n"
+                        f"• Weekly peak: **{peak_w:.1%}**\n"
                         f"• Status: {status}")
-            lines = ["Utilization across all loaded labs:"]
+            lines = []
+            if year:
+                lines.append(f"**Utilization in {year}:**")
+            else:
+                lines.append("**Utilization across all loaded labs:**")
             for t in all_types:
-                tk  = all_types_map[t]; udf = session_data[tk]["util_df"]
-                if t not in udf.columns: continue
-                p   = udf[t].max(); a = udf[t].mean()
-                st2 = "🔴" if p > 1 else "🟡" if p >= 0.8 else "🟢"
-                lines.append(f"  {st2} **{t}**: peak {p:.1%} | avg {a:.1%}")
+                tk   = all_types_map[t]
+                util = _ann_util(t, tk, year)
+                st2  = "🔴" if util > 1 else "🟡" if util >= 0.8 else "🟢"
+                lines.append(f"  {st2} **{t}**: {util:.1%}")
             return "\n".join(lines)
 
         # 3 — highest demand
@@ -1648,19 +1781,16 @@ with st.sidebar:
     st.markdown(bubbles_html, unsafe_allow_html=True)
 
     # ── input + buttons ────────────────────────────────────
-    user_question = st.text_input(
-        "Ask:", key="chat_input", label_visibility="collapsed",
-        placeholder="e.g. LCF utilization in 2024 | capacity for 80% Plasma | summary",
+    # Use chat_input which auto-submits on Enter (no button needed)
+    user_question = st.chat_input(
+        "Ask about your data...",
+        key="chat_input",
     )
-    col_ask, col_clr = st.columns(2)
-    with col_ask:
-        ask_clicked = st.button("Ask", key="chat_ask", use_container_width=True)
-    with col_clr:
-        if st.button("🗑️ Clear", key="chat_clear", use_container_width=True):
-            st.session_state.chat_history = []
-            st.rerun()
+    if st.button("🗑️ Clear History", key="chat_clear", use_container_width=True):
+        st.session_state.chat_history = []
+        st.rerun()
 
-    if ask_clicked and user_question.strip():
+    if user_question:
         q_text = user_question.strip()
         sd     = _build_session_data()
         answer = answer_data_question(q_text, sd)
@@ -1807,20 +1937,59 @@ if "Tool 1" in tool:
                     key="t1_editable_dl",
                 )
 
-            # Generate Excel
+            # Generate Excel + HTML
             st.markdown("---")
-            st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>', unsafe_allow_html=True)
-            if st.button("⚡ Generate Full Excel Dashboard", key="t1_gen"):
-                with st.spinner("Generating Excel dashboard..."):
-                    out1, warns = gen_module.generate_lcf_creep(paths_1, caps_1, theme_1)
-                    with open(out1, 'rb') as f: excel_bytes = f.read()
-                st.download_button(
-                    "⬇️ Download LCF_Creep_Dashboard.xlsx",
-                    data=excel_bytes, file_name="LCF_Creep_Dashboard.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="t1_dl",
-                )
-                st.success("✅ Dashboard ready! Click the button above to download.")
+            st.markdown('<div class="section-label">💾 Export Dashboards</div>', unsafe_allow_html=True)
+            exp_c1, exp_c2 = st.columns(2)
+            with exp_c1:
+                if st.button("⚡ Generate Full Excel Dashboard", key="t1_gen"):
+                    with st.spinner("Generating Excel dashboard..."):
+                        out1, warns = gen_module.generate_lcf_creep(paths_1, caps_1, theme_1)
+                        with open(out1, 'rb') as f: excel_bytes = f.read()
+                    st.session_state["_t1_excel"] = excel_bytes
+                if "_t1_excel" in st.session_state:
+                    st.download_button(
+                        "⬇️ Download LCF_Creep_Dashboard.xlsx",
+                        data=st.session_state["_t1_excel"],
+                        file_name="LCF_Creep_Dashboard.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="t1_dl",
+                    )
+            with exp_c2:
+                st.markdown("**🌐 Interactive HTML Report**")
+                st.caption("All charts in one self-contained file — shareable without Streamlit.")
+                if st.button("🌐 Generate HTML Report", key="t1_html_gen"):
+                    from datetime import datetime as _dt
+                    _gen_at = _dt.now().strftime("%d %b %Y, %H:%M")
+                    _html_figs = [
+                        ("📈 Utilization Trend",
+                         "Monthly Utilization Trend — LCF & Creep",
+                         fig_util),
+                        ("📊 Year-on-Year Demand",
+                         "YoY Demand & Process Share — LCF & Creep",
+                         fig_bar_1),
+                        ("🥧 Process-wise Share",
+                         "Demand Share by Year",
+                         fig_pies_1),
+                        ("⚡ Capacity vs Demand",
+                         "Average Weekly Demand vs Capacity",
+                         fig_cap),
+                        ("🗓 Gantt — Lab Occupancy",
+                         f"Lab Occupancy Gantt (Year {gantt_year}, Week {gantt_week})",
+                         fig_gantt),
+                    ]
+                    st.session_state["_t1_html"] = generate_tool_html(
+                        "LCF & Creep Lab Dashboard", "#1F3864",
+                        _html_figs, _gen_at
+                    ).encode("utf-8")
+                if "_t1_html" in st.session_state:
+                    st.download_button(
+                        "⬇️ Download LCF_Creep_Report.html",
+                        data=st.session_state["_t1_html"],
+                        file_name="LCF_Creep_Report.html",
+                        mime="text/html",
+                        key="t1_html_dl",
+                    )
     else:
         st.info("👆 Upload one or more Excel files to begin. Files should contain LCF and/or Creep data — "
                 "any layout works (long, wide, messy headers, or one monthly-block file per type).")
@@ -2001,18 +2170,57 @@ elif "Tool 2" in tool:
                 )
 
             st.markdown("---")
-            st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>', unsafe_allow_html=True)
-            if st.button("⚡ Generate Full Excel Dashboard", key="t2_gen"):
-                with st.spinner("Generating..."):
-                    out2, warns2 = gen_module.generate_coating(paths_2, ind_caps_2, theme_2)
-                    with open(out2, 'rb') as f: excel_bytes2 = f.read()
-                st.download_button(
-                    "⬇️ Download Coating_Labs_Dashboard.xlsx",
-                    data=excel_bytes2, file_name="Coating_Labs_Dashboard.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="t2_dl",
-                )
-                st.success("✅ Done!")
+            st.markdown('<div class="section-label">💾 Export Dashboards</div>', unsafe_allow_html=True)
+            exp2_c1, exp2_c2 = st.columns(2)
+            with exp2_c1:
+                if st.button("⚡ Generate Full Excel Dashboard", key="t2_gen"):
+                    with st.spinner("Generating..."):
+                        out2, warns2 = gen_module.generate_coating(paths_2, ind_caps_2, theme_2)
+                        with open(out2, 'rb') as f: excel_bytes2 = f.read()
+                    st.session_state["_t2_excel"] = excel_bytes2
+                if "_t2_excel" in st.session_state:
+                    st.download_button(
+                        "⬇️ Download Coating_Labs_Dashboard.xlsx",
+                        data=st.session_state["_t2_excel"],
+                        file_name="Coating_Labs_Dashboard.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="t2_dl",
+                    )
+            with exp2_c2:
+                st.markdown("**🌐 Interactive HTML Report**")
+                st.caption("All charts in one self-contained file — shareable without Streamlit.")
+                if st.button("🌐 Generate HTML Report", key="t2_html_gen"):
+                    from datetime import datetime as _dt
+                    _gen_at = _dt.now().strftime("%d %b %Y, %H:%M")
+                    _html_figs2 = [
+                        ("📈 Utilization Trend",
+                         "Monthly Utilization Trend — Spray Lab",
+                         fig_u2),
+                        ("📊 Year-on-Year Demand",
+                         "YoY Demand & Process Share — Spray Lab",
+                         fig_bar2),
+                        ("🥧 Process-wise Share",
+                         "Demand Share by Year",
+                         fig_pies_2),
+                        ("⚡ Capacity vs Demand",
+                         "Average Weekly Demand vs Capacity",
+                         fig_cap2),
+                        ("🗓 Gantt — Lab Occupancy",
+                         f"Lab Occupancy Gantt (Year {gantt_year2}, Week {gantt_week2})",
+                         fig_g2),
+                    ]
+                    st.session_state["_t2_html"] = generate_tool_html(
+                        "Spray Lab Dashboard", "#1F5C1A",
+                        _html_figs2, _gen_at
+                    ).encode("utf-8")
+                if "_t2_html" in st.session_state:
+                    st.download_button(
+                        "⬇️ Download Spray_Lab_Report.html",
+                        data=st.session_state["_t2_html"],
+                        file_name="Spray_Lab_Report.html",
+                        mime="text/html",
+                        key="t2_html_dl",
+                    )
     else:
         st.info("👆 Upload one or more Excel files with Cold Spray, HVOF, and/or Plasma data — "
                 "any layout works (long, wide, messy headers, or one monthly-block file per type).")
@@ -2146,24 +2354,62 @@ elif "Tool 3" in tool:
                     key="t3_editable_dl",
                 )
 
-            # Generate Full Excel Dashboard
+            # Generate Full Excel Dashboard + HTML
             st.markdown("---")
-            st.markdown('<div class="section-label">💾 Generate Full Excel Dashboard</div>',
+            st.markdown('<div class="section-label">💾 Export Dashboards</div>',
                         unsafe_allow_html=True)
-            if st.button("⚡ Generate Full Excel Dashboard", key="t3_gen"):
-                with st.spinner("Generating Oxidation Lab OHC dashboard..."):
-                    out_t3, warns_t3 = gen_module.generate_thermal(
-                        paths_t3[0], rig_caps_t3, theme_t3)
-                    with open(out_t3, 'rb') as f:
-                        excel_bytes_t3 = f.read()
-                st.download_button(
-                    "⬇️ Download Thermal_Lab_Dashboard.xlsx",
-                    data=excel_bytes_t3,
-                    file_name="Thermal_Lab_Dashboard.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="t3_dl",
-                )
-                st.success("✅ Dashboard ready! Click the button above to download.")
+            exp3_c1, exp3_c2 = st.columns(2)
+            with exp3_c1:
+                if st.button("⚡ Generate Full Excel Dashboard", key="t3_gen"):
+                    with st.spinner("Generating Oxidation Lab OHC dashboard..."):
+                        out_t3, warns_t3 = gen_module.generate_thermal(
+                            paths_t3[0], rig_caps_t3, theme_t3)
+                        with open(out_t3, 'rb') as f:
+                            excel_bytes_t3 = f.read()
+                    st.session_state["_t3_excel"] = excel_bytes_t3
+                if "_t3_excel" in st.session_state:
+                    st.download_button(
+                        "⬇️ Download Thermal_Lab_Dashboard.xlsx",
+                        data=st.session_state["_t3_excel"],
+                        file_name="Thermal_Lab_Dashboard.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="t3_dl",
+                    )
+            with exp3_c2:
+                st.markdown("**🌐 Interactive HTML Report**")
+                st.caption("All charts in one self-contained file — shareable without Streamlit.")
+                if st.button("🌐 Generate HTML Report", key="t3_html_gen"):
+                    from datetime import datetime as _dt
+                    _gen_at = _dt.now().strftime("%d %b %Y, %H:%M")
+                    _html_figs3 = [
+                        ("📈 Utilization Trend",
+                         "Monthly Utilization Trend — Oxidation Lab OHC",
+                         fig_ut3),
+                        ("📊 Year-on-Year Demand",
+                         "YoY Demand & Process Share — Oxidation Lab OHC",
+                         fig_bar_t3),
+                        ("🥧 Process-wise Share",
+                         "Demand Share by Year",
+                         fig_pies_t3),
+                        ("⚡ Capacity vs Demand",
+                         "Average Weekly Demand vs Capacity",
+                         fig_cap_t3),
+                        ("🗓 Gantt — Lab Occupancy",
+                         f"Lab Occupancy Gantt (Year {gantt_yr_t3}, Week {gantt_wk_t3})",
+                         fig_gantt_t3),
+                    ]
+                    st.session_state["_t3_html"] = generate_tool_html(
+                        "Oxidation Lab OHC Dashboard", "#7F3F00",
+                        _html_figs3, _gen_at
+                    ).encode("utf-8")
+                if "_t3_html" in st.session_state:
+                    st.download_button(
+                        "⬇️ Download Thermal_Lab_Report.html",
+                        data=st.session_state["_t3_html"],
+                        file_name="Thermal_Lab_Report.html",
+                        mime="text/html",
+                        key="t3_html_dl",
+                    )
     else:
         st.info("👆 Upload an Excel file. Columns: Year | Type (Thermal Rig) | Value  "
                 "— or wide format: Year | Week | Thermal Rig")
@@ -2324,20 +2570,20 @@ elif "Tool 4" in tool:
                     fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
                                          marker_color=col_maps_a[ti % 3],
                                          text=[f"{v:.0f}" for v in vals],
-                                         textposition="outside", legendgroup="A"), row=1, col=1)
+                                         textposition="outside"), row=1, col=1)
                 for ti, t in enumerate(types_b):
                     vals = [annual_b.get(int(y), {}).get(t, 0) for y in years]
                     fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
                                          marker_color=col_maps_b[ti % 3],
                                          text=[f"{v:.0f}" for v in vals],
-                                         textposition="outside", legendgroup="B"), row=1, col=2)
+                                         textposition="outside"), row=1, col=2)
                 if has_c:
                     for ti, t in enumerate(types_c):
                         vals = [annual_c.get(int(y), {}).get(t, 0) for y in years]
                         fig.add_trace(go.Bar(name=t, x=[str(y) for y in years], y=vals,
                                              marker_color=col_maps_c[ti % 3],
                                              text=[f"{v:.0f}" for v in vals],
-                                             textposition="outside", legendgroup="C"), row=1, col=3)
+                                             textposition="outside"), row=1, col=3)
                 # Capacity reference lines + corner badges.
                 # The old approach attached the "Cap A:72" text directly to
                 # the dashed line via annotation_text, which Plotly places
@@ -2366,11 +2612,14 @@ elif "Tool 4" in tool:
                 if has_c:
                     _cap_badge(1, 3, cap_c, "#7F3F00", "Cap C")
                 fig.update_layout(barmode="group", height=480,
-                                   title="Annual Demand Comparison — All 3 Lab Groups",
-                                   font=dict(family="Arial", size=11),
-                                   paper_bgcolor="white", plot_bgcolor="white",
-                                   legend=dict(orientation="h", y=-0.2),
-                                   margin=dict(b=100, t=60))
+                                    title="Annual Demand Comparison — All 3 Lab Groups",
+                                    title_font=dict(weight="bold"),
+                                    font=dict(family="Arial", size=11),
+                                    paper_bgcolor="white", plot_bgcolor="white",
+                                    legend=dict(orientation="h", y=-0.25,
+                                                x=0.5, xanchor="center",
+                                                font=dict(size=14)),
+                                    margin=dict(b=110, t=60))
                 return fig
 
             # Tab 3 — 3-group utilisation line chart
@@ -2379,10 +2628,17 @@ elif "Tool 4" in tool:
                 months = ["Jan","Feb","Mar","Apr","May","Jun",
                           "Jul","Aug","Sep","Oct","Nov","Dec"]
                 fig = go.Figure()
-                plot_yrs = list(years)[-3:]
-                dash_styles = ["solid", "dash", "dot"]
+                plot_yrs    = list(years)[-3:]
+                dash_seq3   = ["solid", "dash", "dot", "longdash"]
+                marker_seq3 = ["circle", "square", "diamond", "triangle-up"]
+                GROUP_STYLES = {
+                    "Mechanical": {"color": "#1A4E8A", "width": 3},
+                    "Coating":    {"color": "#1F5C1A", "width": 2.5},
+                    "Thermal":    {"color": "#C55A11", "width": 2.5},
+                }
                 for yi, year in enumerate(plot_yrs):
-                    dash = dash_styles[yi % 3]
+                    dash = dash_seq3[min(yi, len(dash_seq3)-1)]
+                    msym = marker_seq3[min(yi, len(marker_seq3)-1)]
                     for wdf, cap_total, types, label, color in [
                         (wdf_a, cap_a, types_a, "Mechanical", "#1A4E8A"),
                         (wdf_b, cap_b, types_b, "Coating",    "#1F5C1A"),
@@ -2396,11 +2652,14 @@ elif "Tool 4" in tool:
                             cap_wk = cap_total / 52
                             util = tot / cap_wk if cap_wk > 0 and not math.isnan(tot) else 0
                             monthly.append(util)
+                        gs = GROUP_STYLES.get(label, {})
                         fig.add_trace(go.Scatter(
                             x=months, y=monthly,
                             name=f"{label} {year}",
-                            line=dict(color=color, width=2, dash=dash),
-                            mode="lines+markers", marker=dict(size=5),
+                            line=dict(color=gs.get("color", color),
+                                      width=gs.get("width", 2), dash=dash),
+                            mode="lines+markers",
+                            marker=dict(size=7, symbol=msym),
                         ))
                 fig.add_hline(y=1.0, line_dash="dot", line_color="#FF4444",
                                annotation_text="100%", annotation_position="right")
@@ -2408,11 +2667,15 @@ elif "Tool 4" in tool:
                                annotation_text="80%", annotation_position="right")
                 fig.update_layout(
                     title="Monthly Utilization % — All Groups (last 3 years)",
+                    title_font=dict(weight="bold"),
                     xaxis_title="Month", yaxis_title="Utilization",
                     yaxis_tickformat=".0%", height=440,
                     font=dict(family="Arial", size=12),
                     paper_bgcolor="white", plot_bgcolor="white",
-                    legend=dict(orientation="h", y=-0.4), margin=dict(b=120),
+                    legend=dict(orientation="h", y=-0.4,
+                                x=0.5, xanchor="center",
+                                font=dict(size=14)),
+                    margin=dict(b=120),
                 )
                 return fig
 
